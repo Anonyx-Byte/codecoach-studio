@@ -22,16 +22,39 @@ The architecture follows a client–server model with AI orchestration handled s
 
 ## 2.1 High-Level Architecture
 
-User  
-│  
-▼  
-React + TypeScript Frontend  
-│  
-▼  
-Node.js + Express Backend (REST APIs)  
-│  
-├── AI Service Adapter → External AI API  
-└── JSON Datastore (File-based persistence)  
+┌─────────────────────────────────────────────────────────────┐
+│                     React + TypeScript                       │
+│                        Frontend                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │  Code    │  │  Quiz    │  │ Analytics│  │   Auth   │   │
+│  │ Explain  │  │  Taking  │  │Dashboard │  │   UI     │   │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                    REST API (JSON)
+                            │
+┌─────────────────────────────────────────────────────────────┐
+│                  Node.js + Express Backend                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │   Auth   │  │   Code   │  │   Quiz   │  │Analytics │   │
+│  │ Service  │  │ Explain  │  │ Service  │  │ Service  │   │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
+│                            │                                 │
+│                    ┌───────┴────────┐                       │
+│                    │  AI Service    │                       │
+│                    │   Adapter      │                       │
+│                    └───────┬────────┘                       │
+└────────────────────────────┼────────────────────────────────┘
+                             │
+                    ┌────────┴────────┐
+                    │  JSON Datastore │
+                    │   (File System) │
+                    └─────────────────┘
+                             │
+                    ┌────────┴────────┐
+                    │  External AI    │
+                    │     Service     │
+                    └─────────────────┘
 
 ## 2.2 Architectural Principles
 
