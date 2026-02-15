@@ -1,236 +1,181 @@
-## 1. System Design Summary
+# design.md — CodeCoach Studio
 
-CodeCoach Studio follows a client-server architecture implementing a structured AI-powered learning loop:
+---
 
-Explain code
+# 1. Overview
 
-Revise with flashcards and tutor voice
+CodeCoach Studio is a full-stack AI-assisted coding education platform designed to provide a structured, end-to-end learning loop for programming students.
 
-Ask follow-up questions
+The system enables users to:
 
-Create or generate quizzes
+- Submit code for structured explanation
+- Ask follow-up questions
+- Generate or manually create quizzes
+- Attempt quizzes (with optional proctored mode)
+- Review performance analytics
 
-Attempt quiz
+The architecture follows a client–server model with AI orchestration handled securely on the backend.
 
-Score and review analytics
+---
 
-## 2. High-Level Architecture
+# 2. System Architecture
 
-User -> Frontend (React + TypeScript) -> Backend (Node.js + Express) -> AI API
+## 2.1 High-Level Architecture
 
-Data storage:
+User  
+│  
+▼  
+React + TypeScript Frontend  
+│  
+▼  
+Node.js + Express Backend (REST APIs)  
+│  
+├── AI Service Adapter → External AI API  
+└── JSON Datastore (File-based persistence)  
 
-Local JSON datastore (backend/data/app-db.json)
+## 2.2 Architectural Principles
 
-## 3. Tech Stack
+- Clear separation of frontend and backend
+- Backend-only AI key handling
+- Structured JSON contracts between layers
+- Defensive validation of all AI outputs
+- Modular service-based backend design
 
-Frontend: React + TypeScript + Vite
+---
 
-Backend: Node.js + Express
+# 3. Technology Stack
 
-AI Layer: External AI API (provider-agnostic)
+## 3.1 Frontend
 
-Storage: Local JSON datastore
+- React 18+
+- TypeScript
+- Vite
+- Monaco Editor (code input)
+- Browser SpeechSynthesis API (Tutor Voice)
+- Axios (HTTP communication)
 
-Speech: Browser SpeechSynthesis API
+## 3.2 Backend
 
-## 4. Frontend Modules
+- Node.js 18+
+- Express
+- JWT-based authentication
+- PBKDF2 password hashing
+- File-based JSON datastore
 
-### 4.1 App Shell (App.tsx)
+## 3.3 AI Integration
 
-Monaco code editor
+- External AI API (provider-agnostic)
+- Timeout handling via AbortController
+- Structured JSON parsing and normalization
 
-Explain flow orchestration
+---
 
-Ask AI panel
+# 4. Core Frontend Modules
 
-Flashcards and result panels
+## 4.1 App Shell (`App.tsx`)
 
-Quiz Studio launcher
+Responsibilities:
 
-Error banner + backend health badge
+- Code input using Monaco Editor
+- Language selection
+- Explain workflow
+- Error handling and loading states
+- Launching Quiz Studio
+- Health status indicator
 
-### 4.2 Quiz Studio (QuizManager.tsx)
+---
 
-Take Quiz mode
+## 4.2 Explanation Panel
 
-Instructor Editor
+Displays structured AI output:
 
-AI quiz generation
+- Summary
+- Responsibilities
+- Edge cases
+- Suggested unit tests
+- Flashcards
+- Key points
+- Confidence score
 
-JSON upload
+Supports multilingual rendering.
 
-Optional proctored mode
+---
 
-Local grading and export
+## 4.3 Ask AI Mentor Panel
 
-### 4.3 Tutor Voice (ChatbotAvatarSync.tsx)
+- Follow-up Q&A interface
+- Maintains conversation context
+- Uses same language preference as explanation
 
-Transcript playback
+---
 
-Language-aware voice selection
+## 4.4 Tutor Voice Module (`ChatbotAvatarSync.tsx`)
 
-Playback controls
+- Converts transcript to speech
+- Supports language-based voice mapping
+- Play / Pause / Resume controls
+- Graceful fallback if voice unavailable
 
-## 5. Backend Modules
+---
 
-### 5.1 API Layer (index.js)
+## 4.5 Quiz Studio (`QuizManager.tsx`)
+
+Supports three quiz creation paths:
+
+1. AI-generated quizzes  
+2. JSON upload  
+3. Instructor manual editor  
+
+Features:
+
+- MCQ / Text / Code questions
+- Difficulty levels (Easy / Medium / Hard)
+- Optional proctored mode
+- Local grading
+- Result export (JSON)
+
+---
+
+## 4.6 Analytics Dashboard
+
+Displays:
+
+- Score trends
+- Topic performance
+- Completion rate
+- Time spent metrics
+
+Instructor view supports aggregated statistics.
+
+---
+
+# 5. Backend Modules
+
+## 5.1 API Layer (`backend/index.js`)
 
 Handles:
 
-Health check
+- Authentication
+- Code explanation
+- Follow-up questions
+- Quiz generation
+- Quiz attempts
+- Proctor event logging
+- Analytics retrieval
+- Health checks
 
-Explain
+All endpoints return JSON.
 
-Ask
-
-Grade
-
-Quiz generation
-
-Auth/profile (if enabled)
-
-Analytics
-
-Proctor event logging
-
-Includes:
-
-Payload validation
-
-Consistent error response format
-
-### 5.2 AI Client Layer (callModel.js)
-
-Sends prompt to AI API
-
-Implements timeout protection
-
-Extracts and returns raw model output
-
-## 6. Runtime Data Flow
-
-User submits code.
-
-Frontend calls /api/explain.
-
-Backend builds prompt and calls AI.
-
-Backend extracts structured JSON.
-
-Frontend renders summary, flashcards, and transcript.
-
-User opens Quiz Studio:
-
-AI generates quiz OR
-
-Uploads JSON OR
-
-Creates manually.
-
-User attempts quiz.
-
-Optional proctor events logged.
-
-Score computed locally.
-
-Analytics stored.
-
-## 7. API Contract Snapshot
-
-GET /api/health
-
-POST /api/explain
-
-POST /api/ask
-
-POST /api/grade
-
-POST /api/quiz/generate
-
-POST /api/proctor/event
-
-POST /api/analytics/attempt
-
-(Additional auth/profile endpoints optional based on deployment mode.)
-
-## 8. Reliability & Error Design
-
-Timeout via AbortController
-
-JSON extraction via tryExtractJson
-
-Quiz normalization before UI rendering
-
-Standard error response format:
+Standard error format:
 
 ```json
 {
   "ok": false,
   "code": "ERROR_CODE",
   "message": "User-friendly message",
-  "detail": "Technical detail"
+  "detail": "Optional debug information"
 }
-```
-
-## 9. Security Design
-
-AI API key stored only in backend .env
-
-No secret exposure in frontend
-
-Optional bearer token authentication
-
-Proctor events validated server-side
-
-## 10. UX Design Principles
-
-Linear learning progression
-
-Structured outputs instead of raw chat
-
-Clear quiz creation pathways
-
-Optional proctor mode visibility
-
-Minimal cognitive overload
-
-## 11. Deployment Configuration
-
-Backend Environment Variables
-
-AI_API_KEY
-
-AI_MODEL
-
-AI_TIMEOUT_MS
-
-AUTH_SECRET
-
-PORT
-
-Frontend Environment
-
-VITE_API_BASE_URL
-
-## 12. Cost Estimation (Planning Range)
-
-One-Time Development
-
-Small team: USD 12,000 - 45,000
-
-Production-grade build: USD 45,000 - 120,000
-
-Monthly MVP Cost
-
-AI usage: USD 20 - 300+
-
-Hosting/storage: USD 15 - 120
-
-Miscellaneous: USD 2 - 30
-
-Typical range: USD 40 - 450+
-
+---
 ## 12. Current Version Flowchart (Frontend-Backend)
 
 ```mermaid
