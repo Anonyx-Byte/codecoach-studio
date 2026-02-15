@@ -175,7 +175,7 @@ Standard error format:
   "message": "User-friendly message",
   "detail": "Optional debug information"
 }
----
+```
 ## 12. Current Version Flowchart (Frontend-Backend)
 
 ```mermaid
