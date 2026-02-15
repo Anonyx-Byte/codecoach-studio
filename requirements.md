@@ -1,233 +1,234 @@
-## 1. System Design Summary
+# Requirements Document — CodeCoach Studio
 
-CodeCoach Studio follows a client-server architecture implementing a structured AI-powered learning loop:
+---
 
-Explain code
+## 1. Introduction
 
-Revise with flashcards and tutor voice
+CodeCoach Studio is an AI-assisted coding education platform designed to help learners understand, practice, and assess programming concepts through structured explanations, adaptive quizzes, and performance analytics.
 
-Ask follow-up questions
+The platform integrates the complete learning loop:
 
-Create or generate quizzes
+**Explain → Revise → Ask → Generate Quiz → Attempt → Score → Review Analytics**
 
-Attempt quiz
+---
 
-Score and review analytics
+## 2. Purpose
 
-## 2. High-Level Architecture
+This document formally defines the functional and non-functional requirements of CodeCoach Studio in a structured and implementation-aligned format.
 
-User -> Frontend (React + TypeScript) -> Backend (Node.js + Express) -> AI API
+---
 
-Data storage:
+## 3. System Overview
 
-Local JSON datastore (backend/data/app-db.json)
+CodeCoach Studio enables:
 
-## 3. Tech Stack
+- Structured AI-powered code explanations
+- Multilingual learning support
+- AI-assisted and instructor-created quizzes
+- Optional proctored quiz attempts
+- Performance tracking and analytics
+- Secure authentication and role-based access
 
-Frontend: React + TypeScript + Vite
+### Architecture Overview
 
-Backend: Node.js + Express
+- **Frontend:** React + TypeScript
+- **Backend:** Node.js + Express
+- **AI Layer:** External AI API
+- **Datastore:** Local JSON-based persistence
 
-AI Layer: External AI API (provider-agnostic)
+---
 
-Storage: Local JSON datastore
+## 4. Glossary
 
-Speech: Browser SpeechSynthesis API
+| Term | Definition |
+|------|------------|
+| System | CodeCoach Studio platform |
+| Student | User who explains code and attempts quizzes |
+| Instructor | User authorized to create/manage quizzes |
+| Code Explanation | Structured AI-generated breakdown of code |
+| Quiz | Structured assessment (MCQ, Text, Code) |
+| Proctored Mode | Quiz mode that logs behavioral events |
+| Analytics Dashboard | Learning performance overview |
+| AI Service | External AI API used for generation |
+| Datastore | Local JSON persistence system |
+| Confidence Score | AI-estimated reliability indicator |
 
-## 4. Frontend Modules
+---
 
-### 4.1 App Shell (App.tsx)
+# 5. Functional Requirements
 
-Monaco code editor
+---
 
-Explain flow orchestration
+## FR-01: User Authentication
 
-Ask AI panel
+**User Story:**  
+As a user, I want secure authentication so that my progress and analytics are personalized.
 
-Flashcards and result panels
+### Acceptance Criteria
 
-Quiz Studio launcher
+1. WHEN valid credentials are submitted, THE System SHALL authenticate the user and issue a session token.
+2. WHEN invalid credentials are submitted, THE System SHALL return an authentication error.
+3. WHEN protected routes are accessed, THE System SHALL validate the session token.
+4. WHEN a token expires, THE System SHALL require re-authentication.
+5. THE System SHALL support role-based access control (Student / Instructor).
 
-Error banner + backend health badge
+---
 
-### 4.2 Quiz Studio (QuizManager.tsx)
+## FR-02: Structured Code Explanation
 
-Take Quiz mode
+**User Story:**  
+As a student, I want structured explanations of pasted code so that I can clearly understand program logic.
 
-Instructor Editor
+### Acceptance Criteria
 
-AI quiz generation
+1. WHEN code is submitted, THE System SHALL generate:
+   - Summary
+   - Responsibilities
+   - Edge cases
+   - Suggested unit tests
+   - Flashcards
+   - Key learning points
+   - Transcript
+   - Confidence score
+2. THE System SHALL return explanations in the selected language.
+3. THE System SHALL normalize AI responses before returning them.
+4. IF the AI Service fails, THE System SHALL return a structured error response.
 
-JSON upload
+---
 
-Optional proctored mode
+## FR-03: Follow-Up AI Mentor
 
-Local grading and export
+**User Story:**  
+As a student, I want to ask contextual follow-up questions.
 
-### 4.3 Tutor Voice (ChatbotAvatarSync.tsx)
+### Acceptance Criteria
 
-Transcript playback
+1. WHEN a follow-up question is submitted, THE System SHALL send relevant context to the AI Service.
+2. THE System SHALL support multi-turn interaction.
+3. THE System SHALL return answers in the user's selected language.
+4. IF the AI Service fails, THE System SHALL return a user-friendly error.
 
-Language-aware voice selection
+---
 
-Playback controls
+## FR-04: AI-Generated Quiz Creation
 
-## 5. Backend Modules
+**User Story:**  
+As a student, I want AI-generated quizzes to test my understanding.
 
-### 5.1 API Layer (index.js)
+### Acceptance Criteria
 
-Handles:
+1. WHEN quiz generation is requested, THE System SHALL generate questions aligned with the explained code.
+2. THE System SHALL support difficulty selection (Easy, Medium, Hard).
+3. THE System SHALL support question types (MCQ, Text, Code).
+4. THE System SHALL validate and normalize AI output.
+5. THE System SHALL persist generated quizzes.
 
-Health check
+---
 
-Explain
+## FR-05: Manual Quiz Authoring
 
-Ask
+**User Story:**  
+As an instructor, I want to manually create quizzes.
 
-Grade
+### Acceptance Criteria
 
-Quiz generation
+1. THE System SHALL validate quiz structure before saving.
+2. WHEN JSON quiz is uploaded, THE System SHALL validate format and schema.
+3. IF uploaded JSON is invalid, THEN THE System SHALL return validation errors.
+4. THE System SHALL restrict quiz editing to Instructor users.
 
-Auth/profile (if enabled)
+---
 
-Analytics
+## FR-06: Quiz Attempt and Scoring
 
-Proctor event logging
+**User Story:**  
+As a student, I want to attempt quizzes and view my score.
 
-Includes:
+### Acceptance Criteria
 
-Payload validation
+1. THE System SHALL present quiz questions according to configuration.
+2. THE System SHALL validate answer format.
+3. WHEN quiz is completed, THE System SHALL calculate score.
+4. THE System SHALL store quiz attempt results.
+5. THE System SHALL display score and feedback.
 
-Consistent error response format
+---
 
-### 5.2 AI Client Layer (callModel.js)
+## FR-07: Proctored Mode
 
-Sends prompt to AI API
+**User Story:**  
+As an instructor, I want optional monitoring during quizzes.
 
-Implements timeout protection
+### Acceptance Criteria
 
-Extracts and returns raw model output
+1. WHEN Proctored Mode is enabled, THE System SHALL log behavioral events.
+2. THE System SHALL log tab switches, copy, and paste actions.
+3. THE System SHALL store logs securely.
+4. WHEN Proctored Mode is disabled, no behavioral logging SHALL occur.
 
-## 6. Runtime Data Flow
+---
 
-User submits code.
+## FR-08: Analytics Dashboard
 
-Frontend calls /api/explain.
+**User Story:**  
+As a user, I want to track learning performance.
 
-Backend builds prompt and calls AI.
+### Acceptance Criteria
 
-Backend extracts structured JSON.
+1. THE System SHALL display quiz score trends.
+2. THE System SHALL display topic-level performance.
+3. THE System SHALL display attempt history.
+4. THE System SHALL compute analytics from stored attempt data.
+5. Instructor view SHALL show aggregated performance data.
 
-Frontend renders summary, flashcards, and transcript.
+---
 
-User opens Quiz Studio:
+## FR-09: Backend Health Monitoring
 
-AI generates quiz OR
+**User Story:**  
+As an administrator, I want system health visibility.
 
-Uploads JSON OR
+### Acceptance Criteria
 
-Creates manually.
+1. THE System SHALL expose `/api/health`.
+2. THE System SHALL verify datastore accessibility.
+3. THE System SHALL verify AI Service connectivity.
+4. WHEN healthy, THE System SHALL return HTTP 200.
+5. WHEN dependent service fails, THE System SHALL return HTTP 503.
 
-User attempts quiz.
+---
 
-Optional proctor events logged.
+# 6. Non-Functional Requirements
 
-Score computed locally.
+## Performance
+- Health endpoint response < 1 second under normal conditions.
+- AI calls must implement timeout handling.
 
-Analytics stored.
+## Reliability
+- AI responses must be normalized before UI rendering.
+- Error responses must follow consistent structure.
 
-## 7. API Contract Snapshot
+## Security
+- API keys stored only in backend environment.
+- No secret exposure in frontend.
+- Protected routes require authentication.
 
-GET /api/health
+## Maintainability
+- Clear frontend/backend separation.
+- Environment-based configuration.
+- Modular architecture.
 
-POST /api/explain
+---
 
-POST /api/ask
+# 7. Submission Compliance
 
-POST /api/grade
+This repository contains:
 
-POST /api/quiz/generate
+- `requirements.md`
+- `design.md`
+- Source code
+- Supporting documentation
 
-POST /api/proctor/event
+Documentation generated via structured Spec → Design workflow and aligned with implementation.
 
-POST /api/analytics/attempt
-
-(Additional auth/profile endpoints optional based on deployment mode.)
-
-## 8. Reliability & Error Design
-
-Timeout via AbortController
-
-JSON extraction via tryExtractJson
-
-Quiz normalization before UI rendering
-
-Standard error response format:
-
-```json
-{
-  "ok": false,
-  "code": "ERROR_CODE",
-  "message": "User-friendly message",
-  "detail": "Technical detail"
-}
-```
-
-## 9. Security Design
-
-AI API key stored only in backend .env
-
-No secret exposure in frontend
-
-Optional bearer token authentication
-
-Proctor events validated server-side
-
-## 10. UX Design Principles
-
-Linear learning progression
-
-Structured outputs instead of raw chat
-
-Clear quiz creation pathways
-
-Optional proctor mode visibility
-
-Minimal cognitive overload
-
-## 11. Deployment Configuration
-
-Backend Environment Variables
-
-AI_API_KEY
-
-AI_MODEL
-
-AI_TIMEOUT_MS
-
-AUTH_SECRET
-
-PORT
-
-Frontend Environment
-
-VITE_API_BASE_URL
-
-## 12. Cost Estimation (Planning Range)
-
-One-Time Development
-
-Small team: USD 12,000 - 45,000
-
-Production-grade build: USD 45,000 - 120,000
-
-Monthly MVP Cost
-
-AI usage: USD 20 - 300+
-
-Hosting/storage: USD 15 - 120
-
-Miscellaneous: USD 2 - 30
-
-Typical range: USD 40 - 450+
 
