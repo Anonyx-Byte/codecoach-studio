@@ -176,7 +176,7 @@ Standard error format:
   "detail": "Optional debug information"
 }
 ```
-## 12. Current Version Flowchart (Frontend-Backend)
+## 6 . Current Version Flowchart (Frontend-Backend)
 
 ```mermaid
 flowchart TD
