@@ -1,0 +1,244 @@
+{
+  "users": [
+    {
+      "id": "26ece0bf-ffe7-4cfb-b924-1abd6a848908",
+      "name": "Demo User",
+      "email": "testuser_a47be037@example.com",
+      "passwordHash": "39070a4d184adb4200bbea2d8aeaefe5da42e90b3748c2d7ccb2692f5905e00eef2f2c10a44f5a5944bf5b1bb7686f0f22f09abda664b48be5bc1c9fba58a6fa",
+      "passwordSalt": "e60b562080b0452016f46504a99417e6",
+      "createdAt": "2026-02-14T17:50:55.430Z",
+      "profile": {
+        "preferredLanguage": "English",
+        "goals": []
+      },
+      "analytics": {
+        "attempts": [
+          {
+            "id": "9862c1d6-931d-43d7-a55d-251895b78600",
+            "createdAt": "2026-02-14T17:50:57.342Z",
+            "quizTitle": "Demo",
+            "score": 78,
+            "totalQuestions": 2,
+            "durationSec": 300,
+            "weakAreas": [
+              "closures"
+            ],
+            "proctorSummary": {
+              "events": [
+                {
+                  "detail": "test",
+                  "type": "tab_hidden"
+                }
+              ],
+              "warnings": 1,
+              "enabled": true
+            }
+          }
+        ],
+        "questionsAsked": 1,
+        "proctorEvents": [],
+        "badges": [
+          "first-quiz-complete"
+        ]
+      }
+    },
+    {
+      "id": "2f2cabab-9801-4f53-b68e-cf524fd90580",
+      "name": "Anonyx KP",
+      "email": "moikp811@gmail.com",
+      "passwordHash": "be54d6eb09c7b7b04c32b1d21e6a7ce25ee930f785feb6dde9a116ec36828c3cba79c5138a99f8af07209a13702b6ec71fd5241c7b10c51b2d38eb2531a05a3d",
+      "passwordSalt": "c5cd1122afd50b6ff79b0548a424e947",
+      "createdAt": "2026-02-14T17:58:07.812Z",
+      "profile": {
+        "preferredLanguage": "English",
+        "goals": [],
+        "preferences": {
+          "theme": "dark",
+          "selectedLanguage": "English",
+          "lastOpenedAt": "2026-02-15T13:23:26.160Z"
+        }
+      },
+      "analytics": {
+        "attempts": [
+          {
+            "id": "50301571-9843-403f-b6ba-54974b8aed05",
+            "createdAt": "2026-02-14T18:03:41.765Z",
+            "quizTitle": "Sample: sum function quiz",
+            "score": 0,
+            "totalQuestions": 3,
+            "durationSec": 0,
+            "weakAreas": [
+              "mcq-easy",
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "f30b2e02-a494-40b0-a2f6-ce4d80d55ea4",
+            "createdAt": "2026-02-14T18:06:31.441Z",
+            "quizTitle": "Sample: sum function quiz",
+            "score": 0,
+            "totalQuestions": 3,
+            "durationSec": 0,
+            "weakAreas": [
+              "mcq-easy",
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "269d2516-bbd7-4ea9-980f-69e2073f5e8f",
+            "createdAt": "2026-02-14T18:07:58.363Z",
+            "quizTitle": "JavaScript Fundamentals Quiz",
+            "score": 0,
+            "totalQuestions": 5,
+            "durationSec": 4,
+            "weakAreas": [
+              "mcq-easy",
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "ae1f1738-ad64-4966-a489-24251133b2b6",
+            "createdAt": "2026-02-14T18:10:02.435Z",
+            "quizTitle": "Sample: sum function quiz",
+            "score": 33,
+            "totalQuestions": 3,
+            "durationSec": 87,
+            "weakAreas": [
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "a56c176e-1085-4ff0-a883-42e20cf7f5d6",
+            "createdAt": "2026-02-14T18:10:46.483Z",
+            "quizTitle": "Sample: sum function quiz",
+            "score": 33,
+            "totalQuestions": 3,
+            "durationSec": 87,
+            "weakAreas": [
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "ff3be190-a072-43db-b6b8-ab4c46efbfc4",
+            "createdAt": "2026-02-14T18:10:52.886Z",
+            "quizTitle": "Sample: sum function quiz",
+            "score": 33,
+            "totalQuestions": 3,
+            "durationSec": 87,
+            "weakAreas": [
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "2a6deb3b-9b0a-4641-8346-5d27fca40c9c",
+            "createdAt": "2026-02-14T18:11:55.255Z",
+            "quizTitle": "Sample: sum function quiz",
+            "score": 33,
+            "totalQuestions": 3,
+            "durationSec": 55,
+            "weakAreas": [
+              "text-medium",
+              "code-hard"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "5d84697a-b035-4156-8ddd-ae155b0e9bc2",
+            "createdAt": "2026-02-15T06:35:26.057Z",
+            "quizTitle": "Array Quiz",
+            "score": 0,
+            "totalQuestions": 5,
+            "durationSec": 13,
+            "weakAreas": [
+              "mcq-easy",
+              "text-medium",
+              "code-hard",
+              "mcq-medium",
+              "text-easy"
+            ],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "09439675-52c8-4415-9179-c05305c0dbd2",
+            "createdAt": "2026-02-15T07:04:45.073Z",
+            "quizTitle": "Arrays in C Quiz",
+            "score": 100,
+            "totalQuestions": 5,
+            "durationSec": 60,
+            "weakAreas": [],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          },
+          {
+            "id": "24a3dec5-8115-42a5-9aef-580cf8853ea6",
+            "createdAt": "2026-02-15T07:04:53.618Z",
+            "quizTitle": "Arrays in C Quiz",
+            "score": 100,
+            "totalQuestions": 5,
+            "durationSec": 60,
+            "weakAreas": [],
+            "proctorSummary": {
+              "enabled": false,
+              "warnings": 0,
+              "events": []
+            }
+          }
+        ],
+        "questionsAsked": 3,
+        "proctorEvents": [],
+        "badges": [
+          "first-quiz-complete",
+          "consistency-starter"
+        ]
+      }
+    }
+  ],
+  "createdAt": "2026-02-14T17:50:53.720Z"
+}
