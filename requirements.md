@@ -1,168 +1,233 @@
-# requirements.md - CodeCoach Studio
+## 1. System Design Summary
 
-## 1. Project Overview
-**Project Name:** CodeCoach Studio  
-**Category:** AI-assisted coding education platform  
-**Primary Objective:** Help learners understand code in their preferred language, revise quickly, and practice with quizzes in one place.
+CodeCoach Studio follows a client-server architecture implementing a structured AI-powered learning loop:
 
-## 2. Problem Statement
-Many students struggle with programming because:
-- Explanations are too technical or English-only.
-- Practice is not adapted by type or difficulty.
-- Learning flow is fragmented across separate tools.
+Explain code
 
-CodeCoach Studio combines explanation, follow-up mentoring, revision, quiz creation, and quiz attempts in a single workflow.
+Revise with flashcards and tutor voice
 
-## 3. Target Users
-- School/college students learning programming fundamentals.
-- Early-career learners preparing for coding interviews.
-- Instructors creating personal/custom quizzes for learners.
+Ask follow-up questions
 
-## 4. Product Goals and Success Criteria
-### 4.1 Goals
-- Deliver clear multilingual explanations from pasted code.
-- Support quiz creation through three paths: AI generation, JSON upload, and Instructor Editor.
-- Support optional proctored quiz attempts with behavior logging.
-- Keep the complete loop in one app: Explain -> Revise -> Ask -> Quiz -> Score.
+Create or generate quizzes
 
-### 4.2 Success Metrics
-- Explain response latency <= 40s at p95 (client timeout guard).
-- Quiz generation latency <= 45s at p95.
-- >= 90% successful AI JSON parse/normalization rate.
-- Users can complete Explain -> Quiz Attempt -> Score without leaving the app.
+Attempt quiz
 
-## 5. Scope
-### 5.1 In Scope
-- Monaco code editor + Explain workflow.
-- Multilingual explanations.
-- Flashcards and key points.
-- Tutor voice playback.
-- Ask AI mentor panel for follow-up doubts.
-- Quiz Studio:
-  - AI quiz generation (topic/type/difficulty/count + optional code context)
-  - Upload quiz JSON
-  - Instructor Editor for manual/custom question authoring
-  - Take Quiz mode and local grading
-  - Optional proctored mode (warnings/events)
-- User auth and profile sync.
-- Analytics dashboard and study-plan generation.
-- Result export as JSON.
-- Dark/Light theme toggle.
+Score and review analytics
 
-### 5.2 Out of Scope (Current Version)
-- Live classroom/instructor broadcast mode.
-- Remote webcam-based proctoring.
+## 2. High-Level Architecture
 
-## 6. Functional Requirements
-### FR-01 Explain Code
-- User shall paste code and request explanation.
-- System shall call `/api/explain` with `{ code, outputLanguage, codeLanguage }`.
-- System shall show summary, responsibilities, edge cases, suggested unit test, used lines, flashcards, key points, transcript, confidence.
+User -> Frontend (React + TypeScript) -> Backend (Node.js + Express) -> AI API
 
-### FR-02 Multilingual Learning
-- User shall select explanation language from predefined options.
-- System shall return explanation content in selected language.
+Data storage:
 
-### FR-03 Tutor Voice
-- System shall read the explanation transcript via browser SpeechSynthesis.
-- User shall control playback (play, pause/resume, close).
+Local JSON datastore (backend/data/app-db.json)
 
-### FR-04 Ask AI Mentor
-- User shall ask follow-up questions related to current code.
-- System shall call `/api/ask` and return answer + follow-up prompts.
+## 3. Tech Stack
 
-### FR-05 Quiz Creation Options
-- User shall be able to:
-  - Generate quiz using AI (`/api/quiz/generate`)
-  - Upload quiz JSON file
-  - Manually create/edit questions in Instructor Editor
-- Question types shall support MCQ, Text, and Code.
-- Difficulty shall support Easy, Medium, Hard.
+Frontend: React + TypeScript + Vite
 
-### FR-06 Quiz Attempt and Proctoring
-- User shall attempt quizzes in Take Quiz mode.
-- System shall support optional proctored mode with event warnings.
-- System shall record attempt summary and proctor summary for authenticated users.
+Backend: Node.js + Express
 
-### FR-07 Grading and Export
-- System shall compute score and show per-question result.
-- System shall export quiz result JSON.
+AI Layer: External AI API (provider-agnostic)
 
-### FR-08 Backend Health Visibility
-- Frontend shall check `/api/health` and show backend status.
+Storage: Local JSON datastore
 
-### FR-09 Error Handling
-- System shall show clear errors for timeout, invalid payload, backend unavailable, upstream AI failure, and malformed AI output.
+Speech: Browser SpeechSynthesis API
 
-## 7. Non-Functional Requirements
-### NFR-01 Performance
-- Health check should respond quickly (<1s in normal conditions).
-- Explain and quiz requests should use timeout and abort handling.
+## 4. Frontend Modules
 
-### NFR-02 Reliability
-- Error responses should follow consistent structure.
-- Backend should use JSON extraction + normalization before sending AI-derived data.
+### 4.1 App Shell (App.tsx)
 
-### NFR-03 Usability
-- UI should be student-friendly, readable, and action-oriented.
-- Quiz capabilities (AI generation, upload, Instructor Editor, proctored attempt) should be clearly discoverable.
+Monaco code editor
 
-### NFR-04 Maintainability
-- Clear frontend/backend separation.
-- Environment-based API configuration.
+Explain flow orchestration
 
-### NFR-05 Security
-- API keys only in backend `.env`.
-- No secret exposure in frontend bundle.
-- Protected analytics/profile routes require bearer token.
+Ask AI panel
 
-## 8. External Dependencies
-- AI API provider (LLM service).
-- Browser Web Speech API.
-- Monaco Editor.
+Flashcards and result panels
 
-## 9. Assumptions and Constraints
-- Internet connectivity required for AI calls.
-- Speech feature depends on browser voice support.
-- AI output can vary; normalization and fallback are required.
+Quiz Studio launcher
 
-## 10. Acceptance Criteria
-- `requirements.md` and `design.md` exist at repo root.
-- `/api/explain` returns structured explanation data.
-- `/api/quiz/generate` supports type/difficulty/count and optional context code.
-- Quiz Studio supports AI generation, JSON upload, and Instructor Editor.
-- Proctored mode toggle works in Take Quiz mode and logs warnings/events.
-- Architecture prompt and architecture flowchart docs reflect the current frontend-backend connections.
-- Presentation content is aligned with implementation for demo/judging.
+Error banner + backend health badge
 
-## 11. Risks and Mitigation
-- **Risk:** LLM returns invalid JSON.  
-  **Mitigation:** `tryExtractJson` + quiz normalization + fallback handling.
-- **Risk:** Backend unavailable during demo.  
-  **Mitigation:** `/api/health` badge + clear error banners.
-- **Risk:** Upstream timeout.  
-  **Mitigation:** `AbortController` + timeout-based user messaging.
+### 4.2 Quiz Studio (QuizManager.tsx)
 
-## 12. Submission Deliverables
-- GitHub repo containing:
-  - `requirements.md`
-  - `design.md`
-  - source code
-  - docs (`docs/codecoach-architecture-flow.md`, `docs/presentation-content.md`)
-- Presentation deck (PDF) from organizer template.
+Take Quiz mode
 
-## 13. Estimated Implementation Cost
-### 13.1 One-Time Build Cost (Development)
-- Student/team implementation (self-built): mainly time cost, minimal direct spend.
-- Freelance/small agency style build (8-12 weeks): approximately **USD 12,000 to USD 45,000** depending on team size and rates.
-- Product-grade implementation with QA/devops depth: approximately **USD 45,000 to USD 120,000**.
+Instructor Editor
 
-### 13.2 Monthly Operating Cost (MVP Scale)
-- AI API usage: **USD 20 to USD 300+** (depends on request volume and token usage).
-- Backend hosting + storage + monitoring: **USD 15 to USD 120**.
-- Domain and misc. tooling: **USD 2 to USD 30**.
-- Estimated total monthly run cost: **USD 40 to USD 450+**.
+AI quiz generation
 
-### 13.3 Cost Notes
-- Costs vary by active users, prompt length, and quiz/explain usage frequency.
-- Proctored mode logging adds storage/events but usually low-to-moderate extra cost at MVP scale.
+JSON upload
+
+Optional proctored mode
+
+Local grading and export
+
+### 4.3 Tutor Voice (ChatbotAvatarSync.tsx)
+
+Transcript playback
+
+Language-aware voice selection
+
+Playback controls
+
+## 5. Backend Modules
+
+### 5.1 API Layer (index.js)
+
+Handles:
+
+Health check
+
+Explain
+
+Ask
+
+Grade
+
+Quiz generation
+
+Auth/profile (if enabled)
+
+Analytics
+
+Proctor event logging
+
+Includes:
+
+Payload validation
+
+Consistent error response format
+
+### 5.2 AI Client Layer (callModel.js)
+
+Sends prompt to AI API
+
+Implements timeout protection
+
+Extracts and returns raw model output
+
+## 6. Runtime Data Flow
+
+User submits code.
+
+Frontend calls /api/explain.
+
+Backend builds prompt and calls AI.
+
+Backend extracts structured JSON.
+
+Frontend renders summary, flashcards, and transcript.
+
+User opens Quiz Studio:
+
+AI generates quiz OR
+
+Uploads JSON OR
+
+Creates manually.
+
+User attempts quiz.
+
+Optional proctor events logged.
+
+Score computed locally.
+
+Analytics stored.
+
+## 7. API Contract Snapshot
+
+GET /api/health
+
+POST /api/explain
+
+POST /api/ask
+
+POST /api/grade
+
+POST /api/quiz/generate
+
+POST /api/proctor/event
+
+POST /api/analytics/attempt
+
+(Additional auth/profile endpoints optional based on deployment mode.)
+
+## 8. Reliability & Error Design
+
+Timeout via AbortController
+
+JSON extraction via tryExtractJson
+
+Quiz normalization before UI rendering
+
+Standard error response format:
+
+```json
+{
+  "ok": false,
+  "code": "ERROR_CODE",
+  "message": "User-friendly message",
+  "detail": "Technical detail"
+}
+```
+
+## 9. Security Design
+
+AI API key stored only in backend .env
+
+No secret exposure in frontend
+
+Optional bearer token authentication
+
+Proctor events validated server-side
+
+## 10. UX Design Principles
+
+Linear learning progression
+
+Structured outputs instead of raw chat
+
+Clear quiz creation pathways
+
+Optional proctor mode visibility
+
+Minimal cognitive overload
+
+## 11. Deployment Configuration
+
+Backend Environment Variables
+
+AI_API_KEY
+
+AI_MODEL
+
+AI_TIMEOUT_MS
+
+AUTH_SECRET
+
+PORT
+
+Frontend Environment
+
+VITE_API_BASE_URL
+
+## 12. Cost Estimation (Planning Range)
+
+One-Time Development
+
+Small team: USD 12,000 - 45,000
+
+Production-grade build: USD 45,000 - 120,000
+
+Monthly MVP Cost
+
+AI usage: USD 20 - 300+
+
+Hosting/storage: USD 15 - 120
+
+Miscellaneous: USD 2 - 30
+
+Typical range: USD 40 - 450+
+
