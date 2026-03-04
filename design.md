@@ -1,6 +1,6 @@
 # Design Document: 
 
-##Introduction
+## Introduction
 
  CodeCoachStudiois an AI-powered platform that explains code in simple, multilinguallanguage and guides learners step-by-step.
  
