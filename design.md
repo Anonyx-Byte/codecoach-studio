@@ -4,11 +4,11 @@
 
  CodeCoachStudiois an AI-powered platform that explains code in simple, multilinguallanguage and guides learners step-by-step.
  
-• It combinescode explanation, doubt-solving, flashcard revision, and quiz 
+-• It combinescode explanation, doubt-solving, flashcard revision, and quiz 
 practice in one unified studio.
-• Instructors and students can generate, upload, or manually create quizzes
+-• Instructors and students can generate, upload, or manually create quizzes
 with instant scoring and optional proctored mode.
-• The goal is to improve "concept clarity, revision, and interview readiness" 
+-• The goal is to improve "concept clarity, revision, and interview readiness" 
 through interactive, AI-assisted learning.
 
 ## Overview
