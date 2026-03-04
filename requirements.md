@@ -1,19 +1,5 @@
 # Requirements Document
 
-## Introduction
-
-CodeCoach Studio currently uses a file-based JSON database with in-memory rate limiting, creating critical race conditions, data loss risks, and preventing horizontal scaling. This specification defines the requirements for migrating to a production-ready serverless architecture using Amazon DynamoDB and Amazon ElastiCache (Redis) that can handle thousands of concurrent users while maintaining backward compatibility with existing API contracts.
-
-The current system includes:
-- File-based JSON storage (backend/data/app-db.json) with race condition vulnerabilities
-- In-memory rate limiting that doesn't work across multiple instances
-- Google OAuth integration for authentication
-- AWS Bedrock Claude 3 Sonnet for AI code explanations
-- AWS Polly for multilingual voice synthesis (7 languages)
-- Backend code execution endpoint for running student code
-- Synchronous password hashing (pbkdf2Sync) that blocks the event loop
-
-## Glossary
 
 - **System**: The CodeCoach Studio backend application
 - **Database_Layer**: Amazon DynamoDB tables for persistent data storage
@@ -206,18 +192,3 @@ The current system includes:
 5. THE System SHALL use CloudWatch for centralized logging and metrics
 6. THE System SHALL use AWS Lambda for isolated code execution sandbox (running student code)
 7. THE System SHALL use S3 for storing quiz exports and database backups
-
-## Out of Scope
-
-The following items are explicitly excluded from this specification:
-
-- Migration to AWS Lambda for the main backend API (will use ECS/EC2 with PM2)
-- Real-time WebSocket connections for live collaboration
-- Multi-region DynamoDB global tables
-- DynamoDB DAX (caching layer) - using ElastiCache Redis instead
-- Custom domain and SSL certificate setup
-- CI/CD pipeline configuration
-- Frontend deployment to CloudFront/S3
-- Cost optimization beyond basic best practices
-- Advanced monitoring and alerting setup
-- Database backup automation beyond DynamoDB PITR
