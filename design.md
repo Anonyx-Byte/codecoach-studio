@@ -84,6 +84,61 @@ graph TB
 5. Lambda aggregates statistics and updates badges
 6. Lambda writes back to DynamoDB Users table
 
+###FLOWCHART:
+```mermaid
+flowchart TD
+  A[User opens CodeCoach Studio] --> B[Frontend checks /api/health]
+  B --> C[User pastes code in Monaco editor]
+  C --> D[Click Explain Code]
+  D --> E[Frontend POST /api/explain]
+  E --> F[Backend validates + rate-limits request]
+  F --> G[Backend calls AI via provider client]
+  G --> H[Backend extracts/parses/normalizes JSON]
+  H --> I[Frontend renders summary, responsibilities, edge cases, unit test, flashcards, confidence]
+
+  I --> J[Optional: Tutor Voice]
+  J --> K[Frontend POST /api/voice/synthesize]
+  K --> L{AWS Polly available?}
+  L -->|Yes| M[Play AWS Polly audio]
+  L -->|No| N[Fallback to browser SpeechSynthesis]
+
+  I --> O[Optional: Ask AI Mentor]
+  O --> P[Frontend POST /api/ask with code + chat history]
+  P --> Q[Backend validates, calls AI, returns answer + followups]
+  Q --> R[Frontend renders mentor response with formatted code blocks]
+
+  I --> S[Optional: Run code output]
+  S --> T[Frontend POST /api/run with selected language]
+  T --> U[Backend executes via runtime service + timeout]
+  U --> V[Frontend shows stdout/stderr/compile output]
+
+  I --> W[Open Quiz Studio]
+  W --> X{Quiz source}
+  X -->|AI Generate| Y[POST /api/quiz/generate]
+  X -->|Upload JSON| Z[Parse + normalize uploaded quiz]
+  X -->|Instructor Editor| AA[Create/edit custom quiz manually]
+
+  Y --> AB[Quiz ready]
+  Z --> AB
+  AA --> AB
+
+  AB --> AC[Default opens in Take Quiz mode]
+  AC --> AD{Proctored mode enabled?}
+  AD -->|Yes| AE[Track warnings/events]
+  AE --> AF[POST /api/proctor/event for authenticated users]
+  AD -->|No| AG[Standard attempt]
+
+  AF --> AH[Local grading + score]
+  AG --> AH
+  AH --> AI[POST /api/analytics/attempt for authenticated users]
+  AI --> AJ[View results, export JSON, open analytics dashboard]
+
+  A --> AK[Optional auth: Email/Password or Google Sign-In]
+  AK --> AL[Receive auth token, load /api/auth/me profile]
+```
+
+
+
 ## Components and Interfaces
 
 ### 1. DynamoDB Connection Module (`db/dynamodb.js`)
@@ -1274,57 +1329,4 @@ GOOGLE_CLIENT_SECRET=<client-secret>
 
 
 
-
-###FLOWCHART:
-```mermaid
-flowchart TD
-  A[User opens CodeCoach Studio] --> B[Frontend checks /api/health]
-  B --> C[User pastes code in Monaco editor]
-  C --> D[Click Explain Code]
-  D --> E[Frontend POST /api/explain]
-  E --> F[Backend validates + rate-limits request]
-  F --> G[Backend calls AI via provider client]
-  G --> H[Backend extracts/parses/normalizes JSON]
-  H --> I[Frontend renders summary, responsibilities, edge cases, unit test, flashcards, confidence]
-
-  I --> J[Optional: Tutor Voice]
-  J --> K[Frontend POST /api/voice/synthesize]
-  K --> L{AWS Polly available?}
-  L -->|Yes| M[Play AWS Polly audio]
-  L -->|No| N[Fallback to browser SpeechSynthesis]
-
-  I --> O[Optional: Ask AI Mentor]
-  O --> P[Frontend POST /api/ask with code + chat history]
-  P --> Q[Backend validates, calls AI, returns answer + followups]
-  Q --> R[Frontend renders mentor response with formatted code blocks]
-
-  I --> S[Optional: Run code output]
-  S --> T[Frontend POST /api/run with selected language]
-  T --> U[Backend executes via runtime service + timeout]
-  U --> V[Frontend shows stdout/stderr/compile output]
-
-  I --> W[Open Quiz Studio]
-  W --> X{Quiz source}
-  X -->|AI Generate| Y[POST /api/quiz/generate]
-  X -->|Upload JSON| Z[Parse + normalize uploaded quiz]
-  X -->|Instructor Editor| AA[Create/edit custom quiz manually]
-
-  Y --> AB[Quiz ready]
-  Z --> AB
-  AA --> AB
-
-  AB --> AC[Default opens in Take Quiz mode]
-  AC --> AD{Proctored mode enabled?}
-  AD -->|Yes| AE[Track warnings/events]
-  AE --> AF[POST /api/proctor/event for authenticated users]
-  AD -->|No| AG[Standard attempt]
-
-  AF --> AH[Local grading + score]
-  AG --> AH
-  AH --> AI[POST /api/analytics/attempt for authenticated users]
-  AI --> AJ[View results, export JSON, open analytics dashboard]
-
-  A --> AK[Optional auth: Email/Password or Google Sign-In]
-  AK --> AL[Receive auth token, load /api/auth/me profile]
-```
 
