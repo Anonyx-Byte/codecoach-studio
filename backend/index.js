@@ -2,6 +2,8 @@
 const path = require("path");
 const fs = require("fs/promises");
 const crypto = require("crypto");
+const util = require("util");
+const lockfile = require("proper-lockfile");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
@@ -9,13 +11,17 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 
 const { callModel } = require("./callModel");
+const pbkdf2 = util.promisify(crypto.pbkdf2);
 
 const PORT = process.env.PORT || 3000;
 const IS_PROD = process.env.NODE_ENV === "production";
+// Auth secret is process-critical in production; fail fast if it is missing or weak.
 const configuredAuthSecret = String(process.env.AUTH_SECRET || "");
-const AUTH_SECRET = configuredAuthSecret.length >= 32
-  ? configuredAuthSecret
-  : crypto.randomBytes(32).toString("hex");
+if (process.env.NODE_ENV === "production" && (!configuredAuthSecret || configuredAuthSecret.length < 32)) {
+  console.error("FATAL: AUTH_SECRET must be set in environment and be at least 32 characters (production).");
+  process.exit(1);
+}
+const AUTH_SECRET = configuredAuthSecret.length >= 32 ? configuredAuthSecret : crypto.randomBytes(32).toString("hex");
 const TOKEN_TTL_MS = Number(process.env.AUTH_TOKEN_TTL_MS || 1000 * 60 * 60 * 24);
 const ENFORCE_HTTPS = String(process.env.ENFORCE_HTTPS || "").toLowerCase() === "true";
 const DB_PATH = path.join(__dirname, "data", "app-db.json");
@@ -23,10 +29,6 @@ const DB_PATH = path.join(__dirname, "data", "app-db.json");
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
-
-if (!configuredAuthSecret || configuredAuthSecret.length < 32) {
-  console.warn("Warning: AUTH_SECRET is missing/weak. Using random process-secret; set a 32+ byte AUTH_SECRET in backend/.env.");
-}
 
 const allowedOrigins = String(process.env.CORS_ORIGIN || "")
   .split(",")
@@ -107,10 +109,16 @@ async function writeDb(nextDb) {
 }
 
 async function updateDb(mutator) {
-  const db = await readDb();
-  const updated = (await mutator(db)) || db;
-  await writeDb(updated);
-  return updated;
+  await ensureDb();
+  const release = await lockfile.lock(DB_PATH, { retries: { retries: 5, factor: 2, minTimeout: 50 } });
+  try {
+    const db = await readDb();
+    const updated = (await mutator(db)) || db;
+    await writeDb(updated);
+    return updated;
+  } finally {
+    await release();
+  }
 }
 
 function sanitizeUser(user) {
@@ -215,9 +223,9 @@ function createRateLimiter({ windowMs, max, keyPrefix }) {
   };
 }
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
-  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
-  return { hash, salt };
+async function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const buf = await pbkdf2(password, salt, 100000, 64, "sha512");
+  return { hash: buf.toString("hex"), salt };
 }
 
 function safeEqual(a, b) {
@@ -544,9 +552,7 @@ function normalizeQuiz(parsed, fallbackCount = 5) {
     questions
   };
 }
-app.get("/", (req, res) => {
-  res.send("CodeCoach backend running");
-});
+app.get("/", (_req, res) => res.send("CodeCoach backend running"));
 app.get("/api/health", (_req, res) => {
   const provider = AI_PROVIDER;
   const model = provider === "bedrock" || provider === "aws" || provider === "aws_bedrock"
@@ -574,13 +580,13 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
     }
 
     let createdUser = null;
-    await updateDb((db) => {
+    await updateDb(async (db) => {
       const users = db.users || [];
       if (users.some((u) => u.email === email)) {
         throw new Error("EMAIL_EXISTS");
       }
 
-      const { hash, salt } = hashPassword(password);
+      const { hash, salt } = await hashPassword(password);
       const user = {
         id: crypto.randomUUID(),
         name,
@@ -638,7 +644,7 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
       return sendError(res, 401, "GOOGLE_SIGNIN_REQUIRED", "This account uses Google Sign-In");
     }
 
-    const { hash } = hashPassword(password, user.passwordSalt);
+    const { hash } = await hashPassword(password, user.passwordSalt);
     if (!safeEqual(hash, user.passwordHash)) {
       return sendError(res, 401, "INVALID_CREDENTIALS", "Invalid email or password");
     }
@@ -1221,6 +1227,7 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
 
 ensureDb()
   .then(() => {
+    console.log("ENV", process.env.NODE_ENV || "dev", "PORT", PORT);
     app.listen(PORT, () => {
       console.log("Server running on port " + PORT);
     });
