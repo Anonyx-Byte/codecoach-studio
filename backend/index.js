@@ -10,7 +10,7 @@ const cors = require("cors");
 
 const { callModel } = require("./callModel");
 
-const PORT = Number(process.env.PORT || 4000);
+const PORT = process.env.PORT || 3000;
 const IS_PROD = process.env.NODE_ENV === "production";
 const configuredAuthSecret = String(process.env.AUTH_SECRET || "");
 const AUTH_SECRET = configuredAuthSecret.length >= 32
@@ -544,7 +544,9 @@ function normalizeQuiz(parsed, fallbackCount = 5) {
     questions
   };
 }
-
+app.get("/", (req, res) => {
+  res.send("CodeCoach backend running");
+});
 app.get("/api/health", (_req, res) => {
   const provider = AI_PROVIDER;
   const model = provider === "bedrock" || provider === "aws" || provider === "aws_bedrock"
@@ -1216,10 +1218,11 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
   }
 });
 
+
 ensureDb()
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`AI-backed API server listening on port ${PORT} (provider: ${AI_PROVIDER})`);
+      console.log("Server running on port " + PORT);
     });
   })
   .catch((err) => {
