@@ -1,6 +1,9 @@
+backend/backend.zip
+*.zip
 node_modules/
 .env
+.env.*
+.DS_Store
+.vscode/
 dist/
 build/
-.vscode/
-.DS_Store
