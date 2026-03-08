@@ -6,6 +6,11 @@ import ChatbotAvatarSync from "./components/ChatbotAvatarSync";
 import "./App.css";
 
 type ExplainResp = {
+  ok?: boolean;
+  provider?: string;
+  model?: string;
+  reviewType?: string;
+  fallbackFrom?: string | null;
   summary?: string;
   transcript?: string;
   responsibilities?: string[];
@@ -20,6 +25,8 @@ type ExplainResp = {
 type ThemeMode = "light" | "dark";
 type BackendHealth = "checking" | "online" | "offline";
 type AuthMode = "login" | "register";
+type AIProvider = "groq" | "gemma";
+type ReviewType = "quick" | "detailed";
 
 type ApiErrorShape = {
   ok?: boolean;
@@ -101,6 +108,16 @@ const EXPLANATION_LANGUAGES = [
   { code: "ta", label: "Tamil" },
   { code: "te", label: "Telugu" }
 ] as const;
+
+const AI_PROVIDER_OPTIONS: { value: AIProvider; label: string }[] = [
+  { value: "groq", label: "Groq" },
+  { value: "gemma", label: "Gemma (Bedrock)" }
+];
+
+const GEMMA_REVIEW_OPTIONS: { value: ReviewType; label: string }[] = [
+  { value: "quick", label: "Quick (Gemma 3 4B IT)" },
+  { value: "detailed", label: "Detailed (Gemma 3 12B IT)" }
+];
 
 const STUDY_MILESTONES = [
   "Read the summary first",
@@ -188,7 +205,12 @@ export default function App() {
 
   const [result, setResult] = useState<ExplainResp | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingProvider, setLoadingProvider] = useState<AIProvider | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<string>("en");
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>("groq");
+  const [selectedReviewType, setSelectedReviewType] = useState<ReviewType>("quick");
+  const [activeModel, setActiveModel] = useState<string>("");
+  const [providerReady, setProviderReady] = useState<{ groq: boolean; gemma: boolean }>({ groq: true, gemma: true });
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [backendHealth, setBackendHealth] = useState<BackendHealth>("checking");
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -246,11 +268,30 @@ export default function App() {
 
     async function pingHealth() {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/health`);
-        if (!res.ok) throw new Error(String(res.status));
-        if (active) setBackendHealth("online");
+        const [healthRes, statusRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/health`),
+          fetch(`${API_BASE_URL}/api/status`)
+        ]);
+        if (!healthRes.ok) throw new Error(String(healthRes.status));
+
+        if (active) {
+          setBackendHealth("online");
+        }
+
+        if (active && statusRes.ok) {
+          const payload = await statusRes.json();
+          const groqConfigured = Boolean(payload?.providers?.groq?.configured);
+          const gemmaConfigured = Boolean(payload?.providers?.gemma?.configured);
+          setProviderReady({
+            groq: groqConfigured,
+            gemma: gemmaConfigured
+          });
+        }
       } catch {
-        if (active) setBackendHealth("offline");
+        if (active) {
+          setBackendHealth("offline");
+          setProviderReady({ groq: false, gemma: false });
+        }
       }
     }
 
@@ -424,31 +465,57 @@ export default function App() {
 
   async function handleExplain() {
     setLoading(true);
+    setLoadingProvider(selectedProvider);
     setResult(null);
     setFlashcardsOpen(false);
     setErrorMessage("");
+    setActiveModel("");
 
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 40000);
+    const timeout = window.setTimeout(() => controller.abort(), 50000);
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/explain`, {
+      const reviewRes = await fetch(`${API_BASE_URL}/api/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
           code,
+          provider: selectedProvider,
+          reviewType: selectedReviewType,
           outputLanguage: selectedLanguageLabel,
           codeLanguage: "javascript"
         })
       });
 
-      if (!res.ok) {
-        throw new Error(await parseApiError(res));
-      }
+      let data: ExplainResp;
+      if (reviewRes.ok) {
+        data = await reviewRes.json();
+      } else {
+        const legacyRes = await fetch(`${API_BASE_URL}/api/explain`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            code,
+            outputLanguage: selectedLanguageLabel,
+            codeLanguage: "javascript"
+          })
+        });
 
-      const data = await res.json();
+        if (!legacyRes.ok) {
+          throw new Error(await parseApiError(reviewRes));
+        }
+
+        const legacyData = await legacyRes.json();
+        data = {
+          ...legacyData,
+          provider: "groq",
+          model: "legacy-groq"
+        };
+      }
       setResult(data);
+      setActiveModel(String(data.model || ""));
       const transcript = data.transcript ?? `${data.summary ?? ""} ${(data.responsibilities ?? []).join(". ")}`.trim();
       setAvatarTranscript(transcript);
       setAutoPlayAvatar(true);
@@ -471,13 +538,14 @@ export default function App() {
     } catch (err: any) {
       const fallback = "Could not generate explanation. Check backend status and API key.";
       if (err?.name === "AbortError") {
-        setErrorMessage("Request timed out. The AI service took too long.");
+        setErrorMessage("Request timed out. The selected AI provider took too long.");
       } else {
         setErrorMessage(err?.message || fallback);
       }
       console.error(err);
     } finally {
       window.clearTimeout(timeout);
+      setLoadingProvider(null);
       setLoading(false);
     }
   }
@@ -719,12 +787,52 @@ export default function App() {
                   ))}
                 </select>
               </label>
+
+              <label className="lang-control">
+                <span>AI provider</span>
+                <select
+                  value={selectedProvider}
+                  onChange={(e) => setSelectedProvider(e.target.value as AIProvider)}
+                >
+                  {AI_PROVIDER_OPTIONS.map((provider) => (
+                    <option key={provider.value} value={provider.value}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {selectedProvider === "gemma" && (
+                <label className="lang-control">
+                  <span>Gemma review depth</span>
+                  <select
+                    value={selectedReviewType}
+                    onChange={(e) => setSelectedReviewType(e.target.value as ReviewType)}
+                  >
+                    {GEMMA_REVIEW_OPTIONS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              <div className="provider-readiness">
+                <span className={providerReady.groq ? "ready" : "not-ready"}>{`Groq: ${providerReady.groq ? "ready" : "not configured"}`}</span>
+                <span className={providerReady.gemma ? "ready" : "not-ready"}>{`Gemma: ${providerReady.gemma ? "ready" : "not configured"}`}</span>
+              </div>
+
               <button
                 onClick={handleExplain}
                 disabled={loading}
                 className="btn-primary"
               >
-                {loading ? "Explaining..." : "Explain Code"}
+                {loading
+                  ? `Reviewing with ${loadingProvider === "gemma"
+                    ? selectedReviewType === "detailed" ? "Gemma 12B" : "Gemma 4B"
+                    : "Groq"}...`
+                  : "Explain Code"}
               </button>
             </div>
           </div>
@@ -814,6 +922,14 @@ export default function App() {
           <div className="results-header">
             <div className="results-headline">
               <h2>Results</h2>
+              {(result?.provider || activeModel) && (
+                <span className="confidence-chip model-chip">
+                  {`${String(result?.provider || selectedProvider).toUpperCase()}${result?.model || activeModel ? ` | ${result?.model || activeModel}` : ""}`}
+                </span>
+              )}
+              {result?.fallbackFrom && (
+                <span className="confidence-chip fallback-chip">{`fallback from ${result.fallbackFrom}`}</span>
+              )}
               {result?.confidence && <span className={`confidence-chip ${result.confidence}`}>{`${result.confidence} confidence`}</span>}
             </div>
             <div className="results-actions">

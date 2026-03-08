@@ -12,6 +12,16 @@ function getProvider() {
   return "groq";
 }
 
+function hasGroqConfig() {
+  return Boolean(String(process.env.GROQ_API_KEY || "").trim());
+}
+
+function hasBedrockConfig() {
+  const region = String(process.env.AWS_REGION || process.env.BEDROCK_REGION || "").trim();
+  const modelId = String(process.env.BEDROCK_MODEL_ID || "").trim();
+  return Boolean(region && modelId);
+}
+
 function getCommonOpts(opts = {}) {
   return {
     systemPrompt: opts.systemPrompt || "You are a concise programming tutor. When asked for JSON, return valid JSON only.",
@@ -147,6 +157,27 @@ async function callBedrock(prompt, opts = {}) {
 
 async function callModel(prompt, opts = {}) {
   const provider = getProvider();
+  if (provider === "auto") {
+    const preferred = String(process.env.AI_PRIMARY_PROVIDER || "").trim().toLowerCase();
+    const order = [];
+    if (preferred === "groq" || preferred === "bedrock") order.push(preferred);
+    if (hasBedrockConfig() && !order.includes("bedrock")) order.push("bedrock");
+    if (hasGroqConfig() && !order.includes("groq")) order.push("groq");
+    if (!order.length) {
+      throw new Error("No AI provider configured. Set Bedrock vars or GROQ_API_KEY.");
+    }
+
+    let lastErr = null;
+    for (const p of order) {
+      try {
+        return p === "bedrock" ? await callBedrock(prompt, opts) : await callGroq(prompt, opts);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("All configured AI providers failed");
+  }
+
   if (provider === "bedrock" || provider === "aws" || provider === "aws_bedrock") {
     return callBedrock(prompt, opts);
   }

@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "migrate:dynamo": "node scripts/migrate-to-dynamo.js",
+    "health:check": "node scripts/health-check.js"
   },
   "keywords": [],
   "author": "",
@@ -12,11 +14,15 @@
   "type": "commonjs",
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1000.0",
-    "@aws-sdk/client-polly": "^3.1000.0",
+    "@aws-sdk/client-dynamodb": "^3.1004.0",
+    "@aws-sdk/client-polly": "^3.1004.0",
+    "@aws-sdk/lib-dynamodb": "^3.1004.0",
+    "bcrypt": "^6.0.0",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "ioredis": "^5.10.0",
     "proper-lockfile": "^4.1.2"
   }
 }

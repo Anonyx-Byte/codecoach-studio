@@ -221,6 +221,32 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 26%, transparent);
 }
 
+.provider-readiness {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.provider-readiness span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.7rem;
+  border: 1px solid transparent;
+}
+
+.provider-readiness .ready {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+.provider-readiness .not-ready {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
 .btn-primary,
 .btn-secondary,
 .btn-tertiary {
@@ -459,6 +485,18 @@
 .confidence-chip.low {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.confidence-chip.model-chip {
+  color: var(--accent-cyan);
+  background: color-mix(in srgb, var(--accent-cyan) 14%, transparent);
+  text-transform: none;
+}
+
+.confidence-chip.fallback-chip {
+  color: var(--accent-gold);
+  background: color-mix(in srgb, var(--accent-gold) 16%, transparent);
+  text-transform: none;
 }
 
 .empty-state {

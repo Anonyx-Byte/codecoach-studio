@@ -1,19 +1,34 @@
 ﻿// backend/index.js
 const path = require("path");
-const fs = require("fs/promises");
 const crypto = require("crypto");
 const util = require("util");
-const lockfile = require("proper-lockfile");
-require("dotenv").config({ path: path.join(__dirname, ".env") });
+const dotenv = require("dotenv");
+const bcrypt = require("bcrypt");
+const { DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
+
+// Load shared local env (codecoach/.env) first, then backend/.env as override.
+dotenv.config({ path: path.join(__dirname, "..", "codecoach", ".env") });
+dotenv.config({ path: path.join(__dirname, ".env"), override: true });
 
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 
+const { GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
 const { callModel } = require("./callModel");
+const { AIService } = require("./aiService");
+const {
+  initDynamo,
+  ensureTablesIfNeeded,
+  ddbDocClient,
+  putUser,
+  updateUser,
+  putAnalyticsAttempt
+} = require("./libs/dynamo");
+const { initRedis, redis: getRedis } = require("./libs/redisClient");
 const pbkdf2 = util.promisify(crypto.pbkdf2);
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 const IS_PROD = process.env.NODE_ENV === "production";
 // Auth secret is process-critical in production; fail fast if it is missing or weak.
 const configuredAuthSecret = String(process.env.AUTH_SECRET || "");
@@ -24,7 +39,7 @@ if (process.env.NODE_ENV === "production" && (!configuredAuthSecret || configure
 const AUTH_SECRET = configuredAuthSecret.length >= 32 ? configuredAuthSecret : crypto.randomBytes(32).toString("hex");
 const TOKEN_TTL_MS = Number(process.env.AUTH_TOKEN_TTL_MS || 1000 * 60 * 60 * 24);
 const ENFORCE_HTTPS = String(process.env.ENFORCE_HTTPS || "").toLowerCase() === "true";
-const DB_PATH = path.join(__dirname, "data", "app-db.json");
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 10);
 
 const app = express();
 app.disable("x-powered-by");
@@ -70,68 +85,108 @@ if (IS_PROD && ENFORCE_HTTPS) {
 }
 
 const AI_PROVIDER = String(process.env.AI_PROVIDER || (process.env.BEDROCK_MODEL_ID ? "bedrock" : "groq")).toLowerCase();
-if (AI_PROVIDER === "groq" && !process.env.GROQ_API_KEY) {
-  console.warn("Warning: GROQ_API_KEY is not set. AI calls will fail until configured in backend/.env.");
+const BEDROCK_SELECTED = AI_PROVIDER === "bedrock" || AI_PROVIDER === "aws" || AI_PROVIDER === "aws_bedrock" || AI_PROVIDER === "auto";
+const GROQ_SELECTED = AI_PROVIDER === "groq" || AI_PROVIDER === "auto";
+if (GROQ_SELECTED && !process.env.GROQ_API_KEY) {
+  console.warn("Warning: GROQ_API_KEY is not set. AI calls may fail for Groq provider.");
 }
-if ((AI_PROVIDER === "bedrock" || AI_PROVIDER === "aws" || AI_PROVIDER === "aws_bedrock")
-  && (!process.env.AWS_REGION || !process.env.BEDROCK_MODEL_ID)) {
-  console.warn("Warning: Bedrock requires AWS_REGION and BEDROCK_MODEL_ID in backend/.env.");
+if (BEDROCK_SELECTED
+  && (!(process.env.AWS_REGION || process.env.BEDROCK_REGION) || !process.env.BEDROCK_MODEL_ID)) {
+  console.warn("Warning: Bedrock requires AWS_REGION (or BEDROCK_REGION) and BEDROCK_MODEL_ID.");
 }
 
-let dbWriteQueue = Promise.resolve();
-
-async function ensureDb() {
-  const dir = path.dirname(DB_PATH);
-  await fs.mkdir(dir, { recursive: true });
-  try {
-    await fs.access(DB_PATH);
-  } catch {
-    const initial = {
-      users: [],
-      createdAt: new Date().toISOString()
-    };
-    await fs.writeFile(DB_PATH, JSON.stringify(initial, null, 2), "utf8");
+function getDocClient() {
+  const client = ddbDocClient();
+  if (!client) {
+    throw new Error("DynamoDB client is not initialized");
   }
+  return client;
 }
 
-async function readDb() {
-  await ensureDb();
-  const raw = await fs.readFile(DB_PATH, "utf8");
-  return JSON.parse(raw || "{}") || { users: [] };
-}
-
-async function writeDb(nextDb) {
-  await ensureDb();
-  dbWriteQueue = dbWriteQueue.then(() =>
-    fs.writeFile(DB_PATH, JSON.stringify(nextDb, null, 2), "utf8")
+async function getUserByEmail(email) {
+  const result = await getDocClient().send(
+    new QueryCommand({
+      TableName: "Users",
+      IndexName: "email-index",
+      KeyConditionExpression: "email = :email",
+      ExpressionAttributeValues: {
+        ":email": email
+      }
+    })
   );
-  return dbWriteQueue;
+
+  return result.Items?.[0] || null;
 }
 
-async function updateDb(mutator) {
-  await ensureDb();
-  const release = await lockfile.lock(DB_PATH, { retries: { retries: 5, factor: 2, minTimeout: 50 } });
+async function getUserById(userId) {
+  const out = await getDocClient().send(new GetCommand({
+    TableName: "Users",
+    Key: { userId }
+  }));
+  return out?.Item || null;
+}
+
+function userIdOf(user) {
+  return user?.userId || user?.id;
+}
+
+async function getAnalyticsRecordsForUser(userId) {
   try {
-    const db = await readDb();
-    const updated = (await mutator(db)) || db;
-    await writeDb(updated);
-    return updated;
-  } finally {
-    await release();
+    const out = await getDocClient().send(new QueryCommand({
+      TableName: "Analytics",
+      KeyConditionExpression: "userId = :uid",
+      ExpressionAttributeValues: { ":uid": userId },
+      ScanIndexForward: false,
+      Limit: 300
+    }));
+    return Array.isArray(out?.Items) ? out.Items : [];
+  } catch {
+    return [];
   }
+}
+
+function buildAnalyticsFromDynamo(user, analyticsItems = []) {
+  const attempts = [];
+  const proctorEvents = [];
+
+  for (const item of analyticsItems) {
+    if (item?.type === "quiz_attempt" && item?.data) {
+      attempts.push(item.data);
+    } else if (item?.type === "proctor_event" && item?.data) {
+      proctorEvents.push(item.data);
+    }
+  }
+
+  const summary = user?.analyticsSummary || {};
+  return {
+    attempts,
+    questionsAsked: Number(summary.questionsAsked || 0),
+    proctorEvents,
+    badges: Array.isArray(summary.badges) ? summary.badges : []
+  };
+}
+
+async function getUserAnalytics(userId) {
+  const [user, items] = await Promise.all([
+    getUserById(userId),
+    getAnalyticsRecordsForUser(userId)
+  ]);
+  if (!user) return null;
+  return buildAnalyticsFromDynamo(user, items);
 }
 
 function sanitizeUser(user) {
+  const analyticsSummary = user.analyticsSummary || user.analytics || {};
   return {
-    id: user.id,
+    id: userIdOf(user),
     name: user.name,
     email: user.email,
     createdAt: user.createdAt,
     profile: user.profile || {},
     analyticsMeta: {
-      attemptsCount: user.analytics?.attempts?.length || 0,
-      questionsAsked: user.analytics?.questionsAsked || 0,
-      badges: user.analytics?.badges || []
+      attemptsCount: Number(analyticsSummary.attemptsCount || 0),
+      questionsAsked: Number(analyticsSummary.questionsAsked || 0),
+      badges: Array.isArray(analyticsSummary.badges) ? analyticsSummary.badges : []
     }
   };
 }
@@ -199,6 +254,18 @@ function validateHistory(raw) {
   }));
 }
 
+function normalizeAiProvider(raw) {
+  const value = String(raw || "groq").trim().toLowerCase();
+  if (value === "gemma" || value === "bedrock" || value === "aws" || value === "aws_bedrock") return "gemma";
+  if (value === "auto") return "auto";
+  return "groq";
+}
+
+function normalizeReviewType(raw) {
+  const value = String(raw || "quick").trim().toLowerCase();
+  return value === "detailed" ? "detailed" : "quick";
+}
+
 function createRateLimiter({ windowMs, max, keyPrefix }) {
   const buckets = new Map();
   return (req, res, next) => {
@@ -223,9 +290,24 @@ function createRateLimiter({ windowMs, max, keyPrefix }) {
   };
 }
 
-async function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
-  const buf = await pbkdf2(password, salt, 100000, 64, "sha512");
-  return { hash: buf.toString("hex"), salt };
+async function hashPassword(password) {
+  const salt = await bcrypt.genSalt(BCRYPT_ROUNDS);
+  const hash = await bcrypt.hash(password, salt);
+  return { hash, salt };
+}
+
+async function verifyPassword(password, user) {
+  if (!user) return { ok: false, legacy: false };
+  if (user.passwordHash && String(user.passwordHash).startsWith("$2")) {
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    return { ok, legacy: false };
+  }
+  if (user.passwordHash && user.passwordSalt) {
+    const derived = await pbkdf2(password, user.passwordSalt, 100000, 64, "sha512");
+    const hex = derived.toString("hex");
+    return { ok: safeEqual(hex, user.passwordHash), legacy: true };
+  }
+  return { ok: false, legacy: false };
 }
 
 function safeEqual(a, b) {
@@ -280,6 +362,7 @@ const authLimiter = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 40, keyPr
 const aiLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 24, keyPrefix: "ai" });
 const runLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20, keyPrefix: "run" });
 const voiceLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 18, keyPrefix: "voice" });
+const aiService = new AIService(process.env);
 
 function computeBadges(analytics) {
   const attempts = analytics?.attempts || [];
@@ -354,6 +437,71 @@ ${code}
 \`\`\`
 
 Return only JSON.
+`.trim();
+}
+
+function buildStructuredReviewPrompt({ code, codeLanguage = "javascript", outputLanguage = "English", reviewType = "quick" }) {
+  const mode = normalizeReviewType(reviewType);
+  const isDetailed = mode === "detailed";
+  return `
+You are a senior code reviewer.
+Review the following ${codeLanguage} code in ${outputLanguage}.
+Review depth: ${isDetailed ? "detailed architecture + maintainability review" : "quick review for fast feedback"}.
+Return ONLY valid JSON with this shape:
+{
+  "summary": "short review summary",
+  "responsibilities": ["..."],
+  "edge_cases": ["..."],
+  "suggested_unit_test": "one short test snippet",
+  "used_lines": ["1-2", "3-5"],
+  "flashcards": [{"q":"...", "a":"..."}],
+  "key_points": ["..."],
+  "transcript": "single paragraph spoken-style explanation",
+  "confidence": "low|medium|high"
+}
+
+Rules:
+- Keep summary ${isDetailed ? "4-7 sentences" : "2-4 sentences"}.
+- Include ${isDetailed ? "6-10" : "3-6"} key_points.
+- Use concise beginner-friendly language.
+- used_lines should reference important lines from the code.
+- Return valid JSON only. No markdown.
+
+Code:
+\`\`\`
+${code}
+\`\`\`
+`.trim();
+}
+
+function buildExercisePrompt({ topic, difficulty, count, outputLanguage = "English" }) {
+  return `
+You are a programming instructor creating practice exercises.
+Generate ${count} coding exercises in ${outputLanguage}.
+Topic: ${topic || "programming fundamentals"}.
+Difficulty: ${difficulty}.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "title": "string",
+  "exercises": [
+    {
+      "id": "ex-1",
+      "title": "string",
+      "difficulty": "easy|medium|hard",
+      "prompt": "exercise prompt",
+      "starterCode": "optional starter code",
+      "hints": ["hint 1", "hint 2"],
+      "testCases": ["test case 1", "test case 2"]
+    }
+  ]
+}
+
+Rules:
+- Keep each exercise practical and beginner-friendly.
+- Provide at least 2 hints per exercise.
+- Provide at least 2 testCases per exercise.
+- Return valid JSON only. No markdown.
 `.trim();
 }
 
@@ -552,18 +700,172 @@ function normalizeQuiz(parsed, fallbackCount = 5) {
     questions
   };
 }
+
+function decodeLooseJsonString(value) {
+  return String(value || "")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "")
+    .replace(/\\"/g, "\"")
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+
+function extractStringField(blob, key) {
+  const pattern = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "s");
+  const match = String(blob || "").match(pattern);
+  if (!match?.[1]) return "";
+  return decodeLooseJsonString(match[1]);
+}
+
+function extractStringArrayField(blob, key, limit = 8) {
+  const pattern = new RegExp(`"${key}"\\s*:\\s*\\[([\\s\\S]*?)\\]`, "s");
+  const match = String(blob || "").match(pattern);
+  if (!match?.[1]) return [];
+  const values = [];
+  const rx = /"((?:\\.|[^"\\])*)"/g;
+  let item = null;
+  while ((item = rx.exec(match[1])) !== null) {
+    values.push(decodeLooseJsonString(item[1]));
+    if (values.length >= limit) break;
+  }
+  return values.filter(Boolean);
+}
+
+function extractEmbeddedReview(blob) {
+  const source = String(blob || "").replace(/```json/gi, "").replace(/```/g, "").trim();
+  if (!source || (!source.includes("\"summary\"") && !source.includes("\"responsibilities\""))) {
+    return null;
+  }
+
+  const summary = extractStringField(source, "summary");
+  const transcript = extractStringField(source, "transcript");
+  const suggestedUnitTest = extractStringField(source, "suggested_unit_test");
+  const confidenceRaw = extractStringField(source, "confidence").toLowerCase();
+  const confidence = ["low", "medium", "high"].includes(confidenceRaw) ? confidenceRaw : "medium";
+
+  const responsibilities = extractStringArrayField(source, "responsibilities", 8);
+  const edgeCases = extractStringArrayField(source, "edge_cases", 8);
+  const usedLines = extractStringArrayField(source, "used_lines", 8);
+  const keyPoints = extractStringArrayField(source, "key_points", 10);
+
+  if (!summary && !responsibilities.length && !edgeCases.length && !keyPoints.length) {
+    return null;
+  }
+
+  return {
+    summary,
+    transcript,
+    responsibilities,
+    edge_cases: edgeCases,
+    suggested_unit_test: suggestedUnitTest,
+    used_lines: usedLines,
+    key_points: keyPoints,
+    confidence
+  };
+}
+
+function normalizeReviewPayload(raw, fallbackText = "") {
+  let src = raw && typeof raw === "object" ? raw : {};
+  const fallbackEmbedded = extractEmbeddedReview(fallbackText);
+  if (fallbackEmbedded) {
+    src = { ...fallbackEmbedded, ...src };
+  }
+
+  if (typeof src.summary === "string" && src.summary.includes("\"summary\"")) {
+    const nested = extractEmbeddedReview(src.summary);
+    if (nested) {
+      src = { ...src, ...nested };
+    }
+  }
+
+  const summary = String(src.summary || fallbackText || "").trim();
+  const transcript = String(src.transcript || summary || fallbackText || "").trim();
+  const responsibilities = Array.isArray(src.responsibilities)
+    ? src.responsibilities.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const edgeCases = Array.isArray(src.edge_cases)
+    ? src.edge_cases.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const keyPoints = Array.isArray(src.key_points)
+    ? src.key_points.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 10)
+    : [];
+  const usedLines = Array.isArray(src.used_lines)
+    ? src.used_lines.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const flashcards = Array.isArray(src.flashcards)
+    ? src.flashcards
+      .map((c) => ({ q: String(c?.q || "").trim(), a: String(c?.a || "").trim() }))
+      .filter((c) => c.q || c.a)
+      .slice(0, 8)
+    : [];
+
+  const confidenceRaw = String(src.confidence || "").toLowerCase();
+  const confidence = ["low", "medium", "high"].includes(confidenceRaw) ? confidenceRaw : "medium";
+
+  return {
+    summary: summary || "Review generated.",
+    transcript: transcript || summary || "Review generated.",
+    responsibilities,
+    edge_cases: edgeCases,
+    suggested_unit_test: String(src.suggested_unit_test || "").trim(),
+    used_lines: usedLines,
+    flashcards,
+    key_points: keyPoints,
+    confidence
+  };
+}
 app.get("/", (_req, res) => res.send("CodeCoach backend running"));
-app.get("/api/health", (_req, res) => {
-  const provider = AI_PROVIDER;
-  const model = provider === "bedrock" || provider === "aws" || provider === "aws_bedrock"
-    ? (process.env.BEDROCK_MODEL_ID || process.env.AI_MODEL || "bedrock-model")
-    : (process.env.GROQ_MODEL || process.env.AI_MODEL || "llama-3.1-8b-instant");
-  return res.json({
-    ok: true,
-    provider,
-    model,
-    authReady: Boolean(process.env.AUTH_SECRET)
-  });
+app.get("/api/health", async (_req, res) => {
+  try {
+    const provider = AI_PROVIDER;
+    const model = provider === "bedrock" || provider === "aws" || provider === "aws_bedrock"
+      ? (process.env.BEDROCK_MODEL_ID || process.env.AI_MODEL || "bedrock-model")
+      : provider === "auto"
+        ? (process.env.BEDROCK_MODEL_ID || process.env.GROQ_MODEL || process.env.AI_MODEL || "auto")
+        : (process.env.GROQ_MODEL || process.env.AI_MODEL || "llama-3.1-8b-instant");
+
+    let dynamoOk = true;
+    try {
+      const { ddb } = initDynamo({ region: process.env.AWS_REGION });
+      await ddb.send(new DescribeTableCommand({ TableName: "Users" }));
+    } catch {
+      dynamoOk = false;
+    }
+
+    const r = initRedis();
+    let redisOk = false;
+    if (r) {
+      try {
+        const pong = await r.ping();
+        redisOk = pong === "PONG" || Boolean(pong);
+      } catch {
+        redisOk = false;
+      }
+    }
+
+    const ok = dynamoOk && (IS_PROD ? redisOk : true);
+    return res.status(ok ? 200 : 503).json({
+      ok,
+      provider,
+      model,
+      dynamo: dynamoOk,
+      redis: Boolean(redisOk),
+      authReady: Boolean(process.env.AUTH_SECRET)
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.get("/api/status", (_req, res) => {
+  try {
+    return res.json({
+      ok: true,
+      providers: aiService.getStatus()
+    });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", "Failed to get provider status", String(err.message || err));
+  }
 });
 
 app.post("/api/auth/register", authLimiter, async (req, res) => {
@@ -579,41 +881,24 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
       return sendError(res, 400, "BAD_REQUEST", "Password must be at least 6 characters");
     }
 
-    let createdUser = null;
-    await updateDb(async (db) => {
-      const users = db.users || [];
-      if (users.some((u) => u.email === email)) {
-        throw new Error("EMAIL_EXISTS");
-      }
+    const existing = await getUserByEmail(email);
+    if (existing) throw new Error("EMAIL_EXISTS");
 
-      const { hash, salt } = await hashPassword(password);
-      const user = {
-        id: crypto.randomUUID(),
-        name,
-        email,
-        passwordHash: hash,
-        passwordSalt: salt,
-        createdAt: new Date().toISOString(),
-        profile: {
-          preferredLanguage: "English",
-          goals: []
-        },
-        analytics: {
-          attempts: [],
-          questionsAsked: 0,
-          proctorEvents: [],
-          badges: []
-        }
-      };
+    const { hash, salt } = await hashPassword(password);
+    const user = {
+      userId: crypto.randomUUID(),
+      email,
+      name,
+      createdAt: new Date().toISOString(),
+      passwordHash: hash,
+      passwordSalt: salt,
+      profile: { preferredLanguage: "English", goals: [] },
+      analyticsSummary: { questionsAsked: 0, badges: [], attemptsCount: 0 }
+    };
 
-      users.push(user);
-      db.users = users;
-      createdUser = user;
-      return db;
-    });
-
-    const token = createToken({ uid: createdUser.id, exp: Date.now() + TOKEN_TTL_MS });
-    return res.json({ ok: true, token, user: sanitizeUser(createdUser) });
+    await putUser(user);
+    const token = createToken({ uid: user.userId, exp: Date.now() + TOKEN_TTL_MS });
+    return res.json({ ok: true, token, user: sanitizeUser(user) });
   } catch (err) {
     if (err?.code === "FIELD_TOO_LONG") {
       return sendError(res, 400, "BAD_REQUEST", err.message);
@@ -634,22 +919,32 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
       return sendError(res, 400, "BAD_REQUEST", "email and password are required");
     }
 
-    const db = await readDb();
-    const user = (db.users || []).find((u) => u.email === email);
+    const user = await getUserByEmail(email);
     if (!user) {
       return sendError(res, 401, "INVALID_CREDENTIALS", "Invalid email or password");
     }
 
-    if (!user.passwordHash || !user.passwordSalt) {
+    if (!user.passwordHash) {
       return sendError(res, 401, "GOOGLE_SIGNIN_REQUIRED", "This account uses Google Sign-In");
     }
 
-    const { hash } = await hashPassword(password, user.passwordSalt);
-    if (!safeEqual(hash, user.passwordHash)) {
+    const verified = await verifyPassword(password, user);
+    if (!verified.ok) {
       return sendError(res, 401, "INVALID_CREDENTIALS", "Invalid email or password");
     }
 
-    const token = createToken({ uid: user.id, exp: Date.now() + TOKEN_TTL_MS });
+    if (verified.legacy) {
+      const upgraded = await hashPassword(password);
+      await updateUser(
+        { userId: user.userId },
+        "SET passwordHash = :hash, passwordSalt = :salt",
+        { ":hash": upgraded.hash, ":salt": upgraded.salt }
+      );
+      user.passwordHash = upgraded.hash;
+      user.passwordSalt = upgraded.salt;
+    }
+
+    const token = createToken({ uid: userIdOf(user), exp: Date.now() + TOKEN_TTL_MS });
     return res.json({ ok: true, token, user: sanitizeUser(user) });
   } catch (err) {
     if (err?.code === "FIELD_TOO_LONG") {
@@ -685,41 +980,31 @@ app.post("/api/auth/google", authLimiter, async (req, res) => {
       return sendError(res, 401, "INVALID_GOOGLE_TOKEN", "Google token audience mismatch");
     }
 
-    let resolvedUser = null;
-    await updateDb((db) => {
-      const users = db.users || [];
-      let user = users.find((u) => u.email === email);
-      if (!user) {
-        user = {
-          id: crypto.randomUUID(),
-          name,
-          email,
-          authProvider: "google",
-          providerUserId: googleSub,
-          createdAt: new Date().toISOString(),
-          profile: {
-            preferredLanguage: "English",
-            goals: []
-          },
-          analytics: {
-            attempts: [],
-            questionsAsked: 0,
-            proctorEvents: [],
-            badges: []
-          }
-        };
-        users.push(user);
-        db.users = users;
-      } else {
-        user.authProvider = "google";
-        user.providerUserId = googleSub;
-        if (!user.name) user.name = name;
-      }
-      resolvedUser = user;
-      return db;
-    });
+    let resolvedUser = await getUserByEmail(email);
+    if (!resolvedUser) {
+      resolvedUser = {
+        userId: crypto.randomUUID(),
+        name,
+        email,
+        authProvider: "google",
+        providerUserId: googleSub,
+        createdAt: new Date().toISOString(),
+        profile: { preferredLanguage: "English", goals: [] },
+        analyticsSummary: { questionsAsked: 0, badges: [], attemptsCount: 0 }
+      };
+      await putUser(resolvedUser);
+    } else {
+      const updateExpr = "SET authProvider = :provider, providerUserId = :pid, #name = if_not_exists(#name, :name)";
+      await updateUser(
+        { userId: resolvedUser.userId },
+        updateExpr,
+        { ":provider": "google", ":pid": googleSub, ":name": name },
+        { "#name": "name" }
+      );
+      resolvedUser = { ...resolvedUser, authProvider: "google", providerUserId: googleSub, name: resolvedUser.name || name };
+    }
 
-    const token = createToken({ uid: resolvedUser.id, exp: Date.now() + TOKEN_TTL_MS });
+    const token = createToken({ uid: userIdOf(resolvedUser), exp: Date.now() + TOKEN_TTL_MS });
     return res.json({ ok: true, token, user: sanitizeUser(resolvedUser) });
   } catch (err) {
     if (err?.code === "FIELD_TOO_LONG") {
@@ -730,8 +1015,7 @@ app.post("/api/auth/google", authLimiter, async (req, res) => {
 });
 
 app.get("/api/auth/me", authMiddleware, async (req, res) => {
-  const db = await readDb();
-  const user = (db.users || []).find((u) => u.id === req.auth.uid);
+  const user = await getUserById(req.auth.uid);
   if (!user) {
     return sendError(res, 404, "USER_NOT_FOUND", "User not found");
   }
@@ -741,27 +1025,47 @@ app.get("/api/auth/me", authMiddleware, async (req, res) => {
 app.put("/api/profile", authMiddleware, async (req, res) => {
   try {
     const { name, preferredLanguage, goals } = req.body || {};
-    let updatedUser = null;
+    const existingUser = await getUserById(req.auth.uid);
+    if (!existingUser) throw new Error("USER_NOT_FOUND");
 
-    await updateDb((db) => {
-      const user = (db.users || []).find((u) => u.id === req.auth.uid);
-      if (!user) throw new Error("USER_NOT_FOUND");
+    const setExpr = [];
+    const values = {};
+    const names = {};
+    let profileChanged = false;
+    const nextProfile = { ...(existingUser.profile || {}) };
 
-      if (typeof name === "string" && name.trim()) {
-        user.name = sanitizeText(name, 80, "name").trim();
-      }
-      user.profile = user.profile || {};
-      if (typeof preferredLanguage === "string" && preferredLanguage.trim()) {
-        user.profile.preferredLanguage = sanitizeText(preferredLanguage, 40, "preferredLanguage").trim();
-      }
-      if (Array.isArray(goals)) {
-        user.profile.goals = goals.map((g) => sanitizeText(g || "", 120, "goal").trim()).filter(Boolean).slice(0, 8);
-      }
+    if (typeof name === "string" && name.trim()) {
+      names["#name"] = "name";
+      values[":name"] = sanitizeText(name, 80, "name").trim();
+      setExpr.push("#name = :name");
+    }
 
-      updatedUser = user;
-      return db;
-    });
+    if (typeof preferredLanguage === "string" && preferredLanguage.trim()) {
+      nextProfile.preferredLanguage = sanitizeText(preferredLanguage, 40, "preferredLanguage").trim();
+      profileChanged = true;
+    }
 
+    if (Array.isArray(goals)) {
+      nextProfile.goals = goals.map((g) => sanitizeText(g || "", 120, "goal").trim()).filter(Boolean).slice(0, 8);
+      profileChanged = true;
+    }
+
+    if (profileChanged) {
+      names["#profile"] = "profile";
+      values[":profile"] = nextProfile;
+      setExpr.push("#profile = :profile");
+    }
+
+    if (setExpr.length) {
+      await updateUser(
+        { userId: req.auth.uid },
+        `SET ${setExpr.join(", ")}`,
+        values,
+        Object.keys(names).length ? names : undefined
+      );
+    }
+
+    const updatedUser = await getUserById(req.auth.uid);
     return res.json({ ok: true, user: sanitizeUser(updatedUser) });
   } catch (err) {
     if (err?.code === "FIELD_TOO_LONG") {
@@ -777,21 +1081,27 @@ app.put("/api/profile", authMiddleware, async (req, res) => {
 app.post("/api/profile/sync", authMiddleware, async (req, res) => {
   try {
     const { theme, selectedLanguage, lastOpenedAt } = req.body || {};
+    const existingUser = await getUserById(req.auth.uid);
+    if (!existingUser) throw new Error("USER_NOT_FOUND");
 
-    await updateDb((db) => {
-      const user = (db.users || []).find((u) => u.id === req.auth.uid);
-      if (!user) throw new Error("USER_NOT_FOUND");
+    const existingPrefs = existingUser.profile?.preferences || {};
+    const nextPrefs = {
+      ...existingPrefs,
+      ...(theme ? { theme: sanitizeText(theme, 20, "theme") } : {}),
+      ...(selectedLanguage ? { selectedLanguage: sanitizeText(selectedLanguage, 40, "selectedLanguage") } : {}),
+      ...(lastOpenedAt ? { lastOpenedAt: sanitizeText(lastOpenedAt, 60, "lastOpenedAt") } : {})
+    };
+    const nextProfile = {
+      ...(existingUser.profile || {}),
+      preferences: nextPrefs
+    };
 
-      user.profile = user.profile || {};
-      user.profile.preferences = {
-        ...(user.profile.preferences || {}),
-        ...(theme ? { theme: sanitizeText(theme, 20, "theme") } : {}),
-        ...(selectedLanguage ? { selectedLanguage: sanitizeText(selectedLanguage, 40, "selectedLanguage") } : {}),
-        ...(lastOpenedAt ? { lastOpenedAt: sanitizeText(lastOpenedAt, 60, "lastOpenedAt") } : {})
-      };
-
-      return db;
-    });
+    await updateUser(
+      { userId: req.auth.uid },
+      "SET #profile = :profile",
+      { ":profile": nextProfile },
+      { "#profile": "profile" }
+    );
 
     return res.json({ ok: true });
   } catch (err) {
@@ -806,52 +1116,68 @@ app.post("/api/profile/sync", authMiddleware, async (req, res) => {
 });
 
 app.get("/api/analytics/dashboard", authMiddleware, async (req, res) => {
-  const db = await readDb();
-  const user = (db.users || []).find((u) => u.id === req.auth.uid);
+  const user = await getUserById(req.auth.uid);
   if (!user) {
     return sendError(res, 404, "USER_NOT_FOUND", "User not found");
   }
 
-  const analytics = summarizeAnalytics(user.analytics || {});
+  const analyticsData = await getUserAnalytics(req.auth.uid);
+  const analytics = summarizeAnalytics(analyticsData || user.analyticsSummary || {});
   return res.json({ ok: true, analytics });
 });
 
 app.post("/api/analytics/attempt", authMiddleware, async (req, res) => {
   try {
     const payload = req.body || {};
+    const user = await getUserById(req.auth.uid);
+    if (!user) throw new Error("USER_NOT_FOUND");
 
-    await updateDb((db) => {
-      const user = (db.users || []).find((u) => u.id === req.auth.uid);
-      if (!user) throw new Error("USER_NOT_FOUND");
+    const attempt = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      quizTitle: sanitizeText(payload.quizTitle || "Quiz", 140, "quizTitle"),
+      score: clampNumber(payload.score, 0, 100, 0),
+      totalQuestions: clampNumber(payload.totalQuestions, 1, 100, 1),
+      durationSec: clampNumber(payload.durationSec, 0, 14400, 0),
+      weakAreas: Array.isArray(payload.weakAreas)
+        ? payload.weakAreas.map((x) => sanitizeText(x || "", 80, "weakArea")).filter(Boolean).slice(0, 8)
+        : [],
+      proctorSummary: payload.proctorSummary || null
+    };
 
-      user.analytics = user.analytics || { attempts: [], questionsAsked: 0, proctorEvents: [], badges: [] };
-      user.analytics.attempts = user.analytics.attempts || [];
-
-      const attempt = {
-        id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
-        quizTitle: sanitizeText(payload.quizTitle || "Quiz", 140, "quizTitle"),
-        score: clampNumber(payload.score, 0, 100, 0),
-        totalQuestions: clampNumber(payload.totalQuestions, 1, 100, 1),
-        durationSec: clampNumber(payload.durationSec, 0, 14400, 0),
-        weakAreas: Array.isArray(payload.weakAreas)
-          ? payload.weakAreas.map((x) => sanitizeText(x || "", 80, "weakArea")).filter(Boolean).slice(0, 8)
-          : [],
-        proctorSummary: payload.proctorSummary || null
-      };
-
-      user.analytics.attempts.push(attempt);
-      if (user.analytics.attempts.length > 300) {
-        user.analytics.attempts = user.analytics.attempts.slice(-300);
-      }
-
-      user.analytics.badges = computeBadges(user.analytics);
-      return db;
+    await putAnalyticsAttempt({
+      userId: req.auth.uid,
+      createdAt: attempt.createdAt,
+      type: "quiz_attempt",
+      data: attempt
     });
 
-    const freshDb = await readDb();
-    const updatedUser = (freshDb.users || []).find((u) => u.id === req.auth.uid);
-    return res.json({ ok: true, analytics: summarizeAnalytics(updatedUser.analytics || {}) });
+    const records = await getAnalyticsRecordsForUser(req.auth.uid);
+    const attempts = records
+      .filter((x) => x?.type === "quiz_attempt" && x?.data)
+      .map((x) => x.data);
+    const questionsAsked = Number(user.analyticsSummary?.questionsAsked || 0);
+    const badges = computeBadges({ attempts, questionsAsked });
+    const nextSummary = {
+      attemptsCount: attempts.length,
+      questionsAsked,
+      badges
+    };
+
+    await updateUser(
+      { userId: req.auth.uid },
+      "SET analyticsSummary = :summary",
+      { ":summary": nextSummary }
+    );
+
+    const proctorEvents = records
+      .filter((x) => x?.type === "proctor_event" && x?.data)
+      .map((x) => x.data);
+
+    return res.json({
+      ok: true,
+      analytics: summarizeAnalytics({ attempts, questionsAsked, proctorEvents, badges })
+    });
   } catch (err) {
     if (err?.code === "FIELD_TOO_LONG") {
       return sendError(res, 400, "BAD_REQUEST", err.message);
@@ -870,23 +1196,19 @@ app.post("/api/proctor/event", authMiddleware, async (req, res) => {
       return sendError(res, 400, "BAD_REQUEST", "type is required");
     }
 
-    await updateDb((db) => {
-      const user = (db.users || []).find((u) => u.id === req.auth.uid);
-      if (!user) throw new Error("USER_NOT_FOUND");
+    const user = await getUserById(req.auth.uid);
+    if (!user) throw new Error("USER_NOT_FOUND");
 
-      user.analytics = user.analytics || { attempts: [], questionsAsked: 0, proctorEvents: [], badges: [] };
-      user.analytics.proctorEvents = user.analytics.proctorEvents || [];
-      user.analytics.proctorEvents.push({
-        at: new Date().toISOString(),
-        type: sanitizeText(type, 80, "type"),
-        detail: sanitizeText(detail || "", 300, "detail")
-      });
-
-      if (user.analytics.proctorEvents.length > 500) {
-        user.analytics.proctorEvents = user.analytics.proctorEvents.slice(-500);
-      }
-
-      return db;
+    const eventData = {
+      at: new Date().toISOString(),
+      type: sanitizeText(type, 80, "type"),
+      detail: sanitizeText(detail || "", 300, "detail")
+    };
+    await putAnalyticsAttempt({
+      userId: req.auth.uid,
+      createdAt: eventData.at,
+      type: "proctor_event",
+      data: eventData
     });
 
     return res.json({ ok: true });
@@ -898,6 +1220,91 @@ app.post("/api/proctor/event", authMiddleware, async (req, res) => {
       return sendError(res, 404, "USER_NOT_FOUND", "User not found");
     }
     return sendError(res, 500, "SERVER_ERROR", "Failed to log proctor event", String(err.message || err));
+  }
+});
+
+app.post("/api/review", aiLimiter, async (req, res) => {
+  try {
+    const code = sanitizeText(req.body?.code || "", 50000, "code");
+    const outputLanguage = sanitizeText(req.body?.outputLanguage || "English", 40, "outputLanguage");
+    const codeLanguage = sanitizeText(req.body?.codeLanguage || "javascript", 30, "codeLanguage");
+    const provider = normalizeAiProvider(req.body?.provider || "groq");
+    const reviewType = normalizeReviewType(req.body?.reviewType || "quick");
+
+    if (!code.trim()) {
+      return sendError(res, 400, "BAD_REQUEST", "`code` is required");
+    }
+
+    const prompt = buildStructuredReviewPrompt({
+      code,
+      codeLanguage: codeLanguage || "javascript",
+      outputLanguage: outputLanguage || "English",
+      reviewType
+    });
+
+    const ai = await aiService.generateReview({
+      prompt,
+      provider,
+      reviewType,
+      timeoutMs: 35000
+    });
+
+    const parsed = tryExtractJson(ai.text);
+    const base = normalizeReviewPayload(parsed, ai.text);
+
+    return res.json({
+      ok: true,
+      provider: ai.provider,
+      model: ai.model,
+      reviewType,
+      fallbackFrom: ai.fallbackFrom || null,
+      ...base
+    });
+  } catch (err) {
+    if (err?.code === "FIELD_TOO_LONG") {
+      return sendError(res, 400, "BAD_REQUEST", err.message);
+    }
+    return sendError(res, 500, "UPSTREAM_AI_ERROR", "Failed to generate review", String(err.message || err));
+  }
+});
+
+app.post("/api/exercise", aiLimiter, async (req, res) => {
+  try {
+    const topic = sanitizeText(req.body?.topic || "programming fundamentals", 220, "topic").trim();
+    const difficultyRaw = sanitizeText(req.body?.difficulty || "medium", 20, "difficulty").toLowerCase();
+    const difficulty = ["easy", "medium", "hard", "mixed"].includes(difficultyRaw) ? difficultyRaw : "medium";
+    const outputLanguage = sanitizeText(req.body?.outputLanguage || "English", 40, "outputLanguage");
+    const count = clampNumber(req.body?.count, 1, 10, 3);
+
+    const prompt = buildExercisePrompt({
+      topic,
+      difficulty,
+      count,
+      outputLanguage
+    });
+
+    const ai = await aiService.generateExercise({
+      prompt,
+      timeoutMs: 40000
+    });
+
+    const parsed = tryExtractJson(ai.text);
+    if (!parsed || !Array.isArray(parsed.exercises)) {
+      return sendError(res, 502, "INVALID_AI_OUTPUT", "Exercise generator returned invalid JSON", ai.text.slice(0, 500));
+    }
+
+    return res.json({
+      ok: true,
+      provider: ai.provider,
+      model: ai.model,
+      title: String(parsed.title || "Coding Exercises"),
+      exercises: parsed.exercises.slice(0, count)
+    });
+  } catch (err) {
+    if (err?.code === "FIELD_TOO_LONG") {
+      return sendError(res, 400, "BAD_REQUEST", err.message);
+    }
+    return sendError(res, 500, "UPSTREAM_AI_ERROR", "Failed to generate exercise", String(err.message || err));
   }
 });
 
@@ -1042,15 +1449,24 @@ app.post("/api/ask", aiLimiter, async (req, res) => {
     if (req.headers.authorization?.startsWith("Bearer ")) {
       const payload = verifyToken(req.headers.authorization.slice(7));
       if (payload?.uid) {
-        await updateDb((db) => {
-          const user = (db.users || []).find((u) => u.id === payload.uid);
-          if (user) {
-            user.analytics = user.analytics || { attempts: [], questionsAsked: 0, proctorEvents: [], badges: [] };
-            user.analytics.questionsAsked = Number(user.analytics.questionsAsked || 0) + 1;
-            user.analytics.badges = computeBadges(user.analytics);
-          }
-          return db;
-        });
+        const user = await getUserById(payload.uid);
+        if (user) {
+          const summary = user.analyticsSummary || {};
+          const questionsAsked = Number(summary.questionsAsked || 0) + 1;
+          const attemptsCount = Number(summary.attemptsCount || 0);
+          const syntheticAttempts = Array.from({ length: attemptsCount }, () => ({ score: 0 }));
+          const badges = computeBadges({ attempts: syntheticAttempts, questionsAsked });
+
+          await updateUser(
+            { userId: payload.uid },
+            "SET analyticsSummary.questionsAsked = :questionsAsked, analyticsSummary.badges = :badges, analyticsSummary.attemptsCount = if_not_exists(analyticsSummary.attemptsCount, :zero)",
+            {
+              ":questionsAsked": questionsAsked,
+              ":badges": badges,
+              ":zero": attemptsCount
+            }
+          );
+        }
       }
     }
 
@@ -1199,13 +1615,13 @@ app.post("/api/voice/synthesize", voiceLimiter, async (req, res) => {
 app.post("/api/study-plan", authMiddleware, async (req, res) => {
   try {
     const outputLanguage = String(req.body?.outputLanguage || "English");
-    const db = await readDb();
-    const user = (db.users || []).find((u) => u.id === req.auth.uid);
+    const user = await getUserById(req.auth.uid);
     if (!user) {
       return sendError(res, 404, "USER_NOT_FOUND", "User not found");
     }
 
-    const analytics = summarizeAnalytics(user.analytics || {});
+    const analyticsData = await getUserAnalytics(req.auth.uid);
+    const analytics = summarizeAnalytics(analyticsData || user.analyticsSummary || {});
     const prompt = buildStudyPlanPrompt({ outputLanguage, analytics });
     const out = await callModel(prompt, {
       maxTokens: 1000,
@@ -1224,15 +1640,31 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
   }
 });
 
+async function startup() {
+  try {
+    if (!process.env.AWS_REGION) throw new Error("AWS_REGION is required");
+    if (IS_PROD && (!process.env.AUTH_SECRET || process.env.AUTH_SECRET.length < 32)) {
+      throw new Error("AUTH_SECRET must be set and >= 32 chars in production");
+    }
 
-ensureDb()
-  .then(() => {
+    initDynamo({ region: process.env.AWS_REGION });
+    await ensureTablesIfNeeded();
+
+    const r = initRedis();
+    if (IS_PROD && !r) throw new Error("REDIS_URL required in production");
+
     console.log("ENV", process.env.NODE_ENV || "dev", "PORT", PORT);
-    app.listen(PORT, () => {
+    app.listen(PORT, (err) => {
+      if (err) {
+        console.error("Failed to start server on port " + PORT, err.message || err);
+        process.exit(1);
+      }
       console.log("Server running on port " + PORT);
     });
-  })
-  .catch((err) => {
-    console.error("Failed to initialize backend datastore", err);
+  } catch (err) {
+    console.error("Failed to initialize backend:", err && (err.message || err));
     process.exit(1);
-  });
+  }
+}
+
+startup();
