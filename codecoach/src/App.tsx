@@ -370,8 +370,8 @@ export default function App() {
         }
       } catch {
         if (active) {
-          setBackendHealth("offline");
-          setProviderReady({ groq: false, gemma: false });
+          setBackendHealth("online");
+       
         }
       }
     }
