@@ -4,17 +4,20 @@ type ModalProps = {
   open: boolean;
   onClose(): void;
   title?: string;
+  disableClose?: boolean;
   children?: React.ReactNode;
 };
 
-export default function Modal({ open, onClose, title, children }: ModalProps) {
+export default function Modal({ open, onClose, title, disableClose = false, children }: ModalProps) {
   if (!open) return null;
   return (
-    <div style={backdrop} onClick={onClose} role="dialog" aria-modal="true">
+    <div style={backdrop} onClick={() => { if (!disableClose) onClose(); }} role="dialog" aria-modal="true">
       <div style={modal} onClick={(e) => e.stopPropagation()}>
         <div style={header}>
           <strong>{title ?? "Quiz"}</strong>
-          <button aria-label="Close" onClick={onClose} style={closeBtn}>x</button>
+          <button aria-label="Close" onClick={() => { if (!disableClose) onClose(); }} style={closeBtn} disabled={disableClose}>
+            x
+          </button>
         </div>
         <div style={{ padding: 12, maxHeight: "70vh", overflow: "auto" }}>{children}</div>
       </div>

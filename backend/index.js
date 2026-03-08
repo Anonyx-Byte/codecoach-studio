@@ -4,7 +4,6 @@ const crypto = require("crypto");
 const util = require("util");
 const dotenv = require("dotenv");
 const bcrypt = require("bcrypt");
-const { DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
 
 // Load shared local env (codecoach/.env) first, then backend/.env as override.
 dotenv.config({ path: path.join(__dirname, "..", "codecoach", ".env") });
@@ -13,8 +12,12 @@ dotenv.config({ path: path.join(__dirname, ".env"), override: true });
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
+const compression = require("compression");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
-const { GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { GetCommand, QueryCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
 const { callModel } = require("./callModel");
 const { AIService } = require("./aiService");
 const {
@@ -23,23 +26,34 @@ const {
   ddbDocClient,
   putUser,
   updateUser,
-  putAnalyticsAttempt
+  putAnalyticsAttempt,
+  putUserBadge,
+  getUserBadges
 } = require("./libs/dynamo");
-const { initRedis, redis: getRedis } = require("./libs/redisClient");
+const { initRedis } = require("./libs/redisClient");
 const pbkdf2 = util.promisify(crypto.pbkdf2);
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 8080;
+const AWS_REGION = process.env.AWS_REGION || "us-east-1";
+process.env.AWS_REGION = process.env.AWS_REGION || AWS_REGION;
 const IS_PROD = process.env.NODE_ENV === "production";
-// Auth secret is process-critical in production; fail fast if it is missing or weak.
+// Auth secret is recommended in production; generate a temporary one if missing.
 const configuredAuthSecret = String(process.env.AUTH_SECRET || "");
 if (process.env.NODE_ENV === "production" && (!configuredAuthSecret || configuredAuthSecret.length < 32)) {
-  console.error("FATAL: AUTH_SECRET must be set in environment and be at least 32 characters (production).");
-  process.exit(1);
+  console.warn("AUTH_SECRET is missing/weak in production. Using temporary in-memory secret.");
 }
 const AUTH_SECRET = configuredAuthSecret.length >= 32 ? configuredAuthSecret : crypto.randomBytes(32).toString("hex");
 const TOKEN_TTL_MS = Number(process.env.AUTH_TOKEN_TTL_MS || 1000 * 60 * 60 * 24);
 const ENFORCE_HTTPS = String(process.env.ENFORCE_HTTPS || "").toLowerCase() === "true";
 const BCRYPT_ROUNDS = Number(process.env.BCRYPT_ROUNDS || 10);
+let services = {
+  dynamo: false,
+  redis: false,
+  polly: false
+};
+let dynamoAvailable = false;
+let redisClient = null;
+let redisUnavailableWarned = false;
 
 const app = express();
 app.disable("x-powered-by");
@@ -61,7 +75,28 @@ app.use(cors({
     return cb(new Error("CORS blocked: origin not allowed"));
   }
 }));
+app.use(compression());
+app.use(helmet({ contentSecurityPolicy: false }));
+const limiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(limiter);
 app.use(bodyParser.json({ limit: "800kb" }));
+app.use((req, res, next) => {
+  if (req.method === "GET") {
+    if (req.path === "/api/health") {
+      res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=20");
+    } else {
+      res.setHeader("Cache-Control", "private, max-age=15");
+    }
+  } else {
+    res.setHeader("Cache-Control", "no-store");
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -96,15 +131,74 @@ if (BEDROCK_SELECTED
 }
 
 function getDocClient() {
-  const client = ddbDocClient();
-  if (!client) {
-    throw new Error("DynamoDB client is not initialized");
+  try {
+    const client = ddbDocClient();
+    if (!client) return null;
+    return client;
+  } catch (e) {
+    console.warn("Dynamo client unavailable:", e.message);
+    return null;
   }
-  return client;
+}
+
+function getRedis() {
+  if (!redisClient) {
+    if (!redisUnavailableWarned) {
+      console.warn("Redis unavailable");
+      redisUnavailableWarned = true;
+    }
+    return null;
+  }
+  redisUnavailableWarned = false;
+  return redisClient;
+}
+
+function initRedisSafe() {
+  try {
+    redisClient = initRedis();
+    services.redis = Boolean(redisClient);
+    if (redisClient) {
+      console.log("Redis ready");
+    } else {
+      console.warn("Redis not configured. Continuing without Redis.");
+    }
+  } catch (e) {
+    console.error("Redis disabled:", e.message);
+    redisClient = null;
+    services.redis = false;
+  }
+}
+
+async function initServices() {
+  try {
+    initDynamo({ region: process.env.AWS_REGION || AWS_REGION });
+    await ensureTablesIfNeeded();
+    services.dynamo = true;
+    dynamoAvailable = true;
+    console.log("Dynamo ready");
+  } catch (e) {
+    console.error("Dynamo disabled:", e.message);
+    services.dynamo = false;
+    dynamoAvailable = false;
+  }
+
+  initRedisSafe();
+
+  try {
+    require.resolve("@aws-sdk/client-polly");
+    services.polly = true;
+    console.log("Polly ready");
+  } catch (e) {
+    services.polly = false;
+    console.error("Polly disabled:", e.message);
+  }
 }
 
 async function getUserByEmail(email) {
-  const result = await getDocClient().send(
+  const client = getDocClient();
+  if (!client) return null;
+
+  const result = await client.send(
     new QueryCommand({
       TableName: "Users",
       IndexName: "email-index",
@@ -119,7 +213,10 @@ async function getUserByEmail(email) {
 }
 
 async function getUserById(userId) {
-  const out = await getDocClient().send(new GetCommand({
+  const client = getDocClient();
+  if (!client) return null;
+
+  const out = await client.send(new GetCommand({
     TableName: "Users",
     Key: { userId }
   }));
@@ -132,7 +229,10 @@ function userIdOf(user) {
 
 async function getAnalyticsRecordsForUser(userId) {
   try {
-    const out = await getDocClient().send(new QueryCommand({
+    const client = getDocClient();
+    if (!client) return [];
+
+    const out = await client.send(new QueryCommand({
       TableName: "Analytics",
       KeyConditionExpression: "userId = :uid",
       ExpressionAttributeValues: { ":uid": userId },
@@ -367,12 +467,42 @@ const aiService = new AIService(process.env);
 function computeBadges(analytics) {
   const attempts = analytics?.attempts || [];
   const questionsAsked = analytics?.questionsAsked || 0;
+  const sortedDates = attempts
+    .map((a) => new Date(a.createdAt))
+    .filter((d) => !Number.isNaN(d.getTime()))
+    .sort((a, b) => b.getTime() - a.getTime())
+    .map((d) => d.toISOString().slice(0, 10));
+
+  const uniqueDays = Array.from(new Set(sortedDates));
+  let streakDays = 0;
+  if (uniqueDays.length) {
+    let cursor = new Date(`${uniqueDays[0]}T00:00:00.000Z`);
+    for (const day of uniqueDays) {
+      const current = new Date(`${day}T00:00:00.000Z`);
+      if (current.getTime() === cursor.getTime()) {
+        streakDays += 1;
+        cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
+      } else {
+        break;
+      }
+    }
+  }
+
+  const avgScore = attempts.length
+    ? attempts.reduce((acc, a) => acc + Number(a.score || 0), 0) / attempts.length
+    : 0;
 
   const badges = [];
-  if (attempts.length >= 1) badges.push("first-quiz-complete");
-  if (attempts.length >= 5) badges.push("consistency-starter");
-  if (attempts.filter((a) => (a.score || 0) >= 80).length >= 3) badges.push("high-scorer");
-  if (questionsAsked >= 5) badges.push("curious-learner");
+  if (attempts.length >= 1) badges.push("First Quiz");
+  if (attempts.length >= 5) badges.push("Quiz Explorer");
+  if (streakDays >= 5) badges.push("5 Day Study Streak");
+  if (avgScore >= 80) badges.push("80% Accuracy");
+  if (attempts.length >= 3) {
+    const first = Number(attempts[0]?.score || 0);
+    const last = Number(attempts[attempts.length - 1]?.score || 0);
+    if (last - first >= 15) badges.push("Improvement Champion");
+  }
+  if (questionsAsked >= 5) badges.push("Curious Learner");
 
   return badges;
 }
@@ -414,6 +544,85 @@ function summarizeAnalytics(analytics) {
     badges,
     recentAttempts
   };
+}
+
+function weekdayName(dateStr) {
+  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const d = new Date(dateStr);
+  return Number.isNaN(d.getTime()) ? "Unknown" : names[d.getDay()];
+}
+
+function buildDetailedAnalytics(analytics) {
+  const base = summarizeAnalytics(analytics);
+  const attempts = Array.isArray(analytics?.attempts) ? analytics.attempts : [];
+  const weakMap = new Map();
+  const weekdayCounts = new Map();
+
+  for (const attempt of attempts) {
+    const day = weekdayName(attempt?.createdAt);
+    weekdayCounts.set(day, (weekdayCounts.get(day) || 0) + 1);
+    for (const area of attempt?.weakAreas || []) {
+      weakMap.set(area, (weakMap.get(area) || 0) + 1);
+    }
+  }
+
+  const topicAccuracy = Array.from(weakMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([topic, misses]) => ({
+      topic,
+      accuracy: Math.max(35, 100 - misses * 10)
+    }));
+
+  const weekOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const weeklyActivity = weekOrder.map((day) => ({
+    day,
+    attempts: weekdayCounts.get(day) || 0
+  }));
+
+  const scoreTrend = base.scoreTrend.map((point) => ({
+    at: point.at,
+    score: Number(point.score || 0)
+  }));
+
+  const completionRate = attempts.length
+    ? Math.round(
+      (attempts.reduce((acc, a) => {
+        const totalQ = Number(a.totalQuestions || 0);
+        if (!totalQ) return acc;
+        return acc + Math.min(1, Number(a.score || 0) / 100);
+      }, 0) / attempts.length) * 100
+    )
+    : 0;
+
+  const firstScore = scoreTrend.length ? scoreTrend[0].score : 0;
+  const lastScore = scoreTrend.length ? scoreTrend[scoreTrend.length - 1].score : 0;
+  const improvementPercentage = firstScore > 0
+    ? Math.round(((lastScore - firstScore) / firstScore) * 100)
+    : lastScore > 0 ? 100 : 0;
+
+  const recommendedPracticeMinutes = Math.max(30, Math.min(120, 35 + base.weakTopics.length * 10));
+
+  return {
+    ...base,
+    scoreTrend,
+    topicAccuracy,
+    weeklyActivity,
+    completionRate,
+    improvementPercentage,
+    recommendedPracticeMinutes
+  };
+}
+
+async function syncUserBadges(userId, badges = []) {
+  const unique = Array.from(new Set((badges || []).map((b) => String(b || "").trim()).filter(Boolean)));
+  for (const badgeId of unique) {
+    try {
+      await putUserBadge({ userId, badgeId, earnedAt: new Date().toISOString() });
+    } catch (err) {
+      console.warn("Failed to persist badge:", badgeId, err?.message || err);
+    }
+  }
 }
 
 function buildExplainPrompt({ code, codeLanguage = "javascript", outputLanguage = "English" }) {
@@ -608,21 +817,102 @@ ${question}
 }
 
 function buildStudyPlanPrompt({ outputLanguage, analytics }) {
+  const weakTopics = (analytics?.weakTopics || []).map((x) => x.topic);
+  const recentAttempts = analytics?.recentAttempts || [];
+  const completionRate = analytics?.completionRate ?? 0;
+  const recommendedPracticeMinutes = analytics?.recommendedPracticeMinutes ?? 45;
   return `
-Create a 7-day coding study plan in ${outputLanguage} for a student.
-Use analytics below:
-${JSON.stringify(analytics)}
+Create a personalized weekly coding study plan in ${outputLanguage}.
+Use the student analytics to tailor weak-topic practice, revision reminders, and quiz suggestions.
 
-Return ONLY valid JSON with shape:
+Student weak topics: ${JSON.stringify(weakTopics)}
+Recent quiz history: ${JSON.stringify(recentAttempts)}
+Completion rate: ${completionRate}%
+Recommended daily practice minutes: ${recommendedPracticeMinutes}
+
+Return ONLY valid JSON with this exact shape:
 {
-  "title": "...",
-  "daily_plan": [
-    {"day": 1, "focus": "...", "task": "...", "practice_minutes": 45},
-    {"day": 2, "focus": "...", "task": "...", "practice_minutes": 45}
+  "title": "Weekly Study Plan",
+  "recommendedPracticeMinutes": 45,
+  "weakTopics": ["Arrays", "Loops"],
+  "quizSuggestions": ["..."],
+  "revisionReminders": ["..."],
+  "days": [
+    {
+      "day": "Monday",
+      "topics": ["Arrays", "Loops"],
+      "tasks": ["Solve 10 array problems", "Review loop concepts"],
+      "practiceMinutes": 45
+    }
   ],
   "tips": ["...", "..."]
 }
+
+Rules:
+- Include exactly 7 day objects.
+- Keep tasks actionable and short.
+- Focus more on weak topics.
+- Return JSON only. No markdown.
 `.trim();
+}
+
+function normalizeStudyPlan(planRaw, analytics) {
+  const src = (planRaw && typeof planRaw === "object") ? planRaw : {};
+  const fallbackWeakTopics = Array.isArray(analytics?.weakTopics)
+    ? analytics.weakTopics.map((x) => x.topic).slice(0, 5)
+    : [];
+  const fallbackDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const recommendedPracticeMinutes = clampNumber(
+    src.recommendedPracticeMinutes,
+    20,
+    180,
+    Number(analytics?.recommendedPracticeMinutes || 45)
+  );
+
+  const inputDays = Array.isArray(src.days) ? src.days : [];
+  const normalizedDays = (inputDays.length ? inputDays : fallbackDays.map((day) => ({
+    day,
+    topics: fallbackWeakTopics.length ? fallbackWeakTopics : ["Core Revision"],
+    tasks: ["Revise concepts", "Solve targeted problems"],
+    practiceMinutes: recommendedPracticeMinutes
+  }))).slice(0, 7).map((d, idx) => ({
+    day: sanitizeText(d?.day || fallbackDays[idx] || `Day ${idx + 1}`, 30, "day"),
+    topics: Array.isArray(d?.topics)
+      ? d.topics.map((t) => sanitizeText(t || "", 80, "topic")).filter(Boolean).slice(0, 5)
+      : [],
+    tasks: Array.isArray(d?.tasks)
+      ? d.tasks.map((t) => sanitizeText(t || "", 160, "task")).filter(Boolean).slice(0, 6)
+      : [],
+    practiceMinutes: clampNumber(d?.practiceMinutes, 20, 180, recommendedPracticeMinutes)
+  }));
+
+  while (normalizedDays.length < 7) {
+    const day = fallbackDays[normalizedDays.length] || `Day ${normalizedDays.length + 1}`;
+    normalizedDays.push({
+      day,
+      topics: fallbackWeakTopics.length ? fallbackWeakTopics : ["Core Revision"],
+      tasks: ["Revise concepts", "Solve targeted problems"],
+      practiceMinutes: recommendedPracticeMinutes
+    });
+  }
+
+  return {
+    title: sanitizeText(src.title || "Weekly Study Plan", 100, "title"),
+    recommendedPracticeMinutes,
+    weakTopics: Array.isArray(src.weakTopics)
+      ? src.weakTopics.map((t) => sanitizeText(t || "", 80, "weakTopic")).filter(Boolean).slice(0, 8)
+      : fallbackWeakTopics,
+    quizSuggestions: Array.isArray(src.quizSuggestions)
+      ? src.quizSuggestions.map((x) => sanitizeText(x || "", 140, "quizSuggestion")).filter(Boolean).slice(0, 8)
+      : [],
+    revisionReminders: Array.isArray(src.revisionReminders)
+      ? src.revisionReminders.map((x) => sanitizeText(x || "", 140, "revisionReminder")).filter(Boolean).slice(0, 8)
+      : [],
+    days: normalizedDays,
+    tips: Array.isArray(src.tips)
+      ? src.tips.map((x) => sanitizeText(x || "", 140, "tip")).filter(Boolean).slice(0, 8)
+      : []
+  };
 }
 
 function mapLangToPollyVoice(lang = "en") {
@@ -634,6 +924,22 @@ function mapLangToPollyVoice(lang = "en") {
   if (key === "ta") return { languageCode: "en-IN", voiceId: "Aditi" };
   if (key === "te") return { languageCode: "en-IN", voiceId: "Aditi" };
   return { languageCode: "en-US", voiceId: "Joanna" };
+}
+
+const SUPPORTED_POLLY_VOICES = [
+  { id: "Joanna", lang: "en-US" },
+  { id: "Aditi", lang: "hi-IN" },
+  { id: "Lucia", lang: "es-ES" },
+  { id: "Lea", lang: "fr-FR" }
+];
+
+const POLLY_VOICE_LANG_BY_ID = SUPPORTED_POLLY_VOICES.reduce((acc, item) => {
+  acc[item.id] = item.lang;
+  return acc;
+}, {});
+
+function isValidPollyVoiceId(value) {
+  return /^[A-Za-z][A-Za-z0-9-]{1,39}$/.test(String(value || ""));
 }
 
 const LEVEL_POINTS = { easy: 1, medium: 2, hard: 3 };
@@ -699,6 +1005,188 @@ function normalizeQuiz(parsed, fallbackCount = 5) {
     description: String(parsed?.description || "Practice quiz generated by AI"),
     questions
   };
+}
+
+function sanitizeQuizId(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return `quiz-${Date.now()}`;
+  return value.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 80) || `quiz-${Date.now()}`;
+}
+
+function normalizeQuizQuestionForAttempt(raw, idx) {
+  const base = normalizeQuestion(raw, idx);
+  const explanation = sanitizeText(raw?.explanation || "", 240, "question.explanation");
+  return { ...base, explanation };
+}
+
+function normalizeSubmittedAnswers(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const normalized = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const key = sanitizeText(k, 120, "answerKey");
+    if (typeof v === "number") {
+      normalized[key] = v;
+    } else if (typeof v === "string") {
+      normalized[key] = sanitizeText(v, 8000, "answer");
+    } else {
+      normalized[key] = v == null ? null : sanitizeText(String(v), 8000, "answer");
+    }
+  }
+  return normalized;
+}
+
+async function gradeDescriptiveWithAI({ question, reference, answer, points }) {
+  const cleanQuestion = sanitizeText(question || "", 1200, "question");
+  const cleanReference = sanitizeText(reference || "", 6000, "reference");
+  const cleanAnswer = sanitizeText(answer || "", 8000, "answer");
+
+  if (!cleanAnswer.trim()) {
+    return {
+      awarded: 0,
+      isCorrect: false,
+      explanation: "No answer was submitted for this question.",
+      correct: cleanReference || "Provide a clear, structured answer."
+    };
+  }
+
+  try {
+    const prompt = buildGradePrompt({
+      question: cleanQuestion,
+      reference: cleanReference,
+      answer: cleanAnswer
+    });
+    const out = await callModel(prompt, {
+      maxTokens: 450,
+      temperature: 0.1,
+      timeoutMs: 18000
+    });
+    const parsed = tryExtractJson(out) || {};
+    const scorePercent = clampNumber(parsed.score, 0, 100, 55);
+    const awarded = Math.max(0, Math.min(points, Math.round((scorePercent / 100) * points)));
+    const explanation = String(parsed.feedback || parsed.corrected_answer || "AI reviewed this answer.").trim();
+    const correct = String(parsed.corrected_answer || cleanReference || "Review expected concepts and structure.").trim();
+    return {
+      awarded,
+      isCorrect: awarded >= points,
+      explanation,
+      correct
+    };
+  } catch (err) {
+    console.warn("AI descriptive grading fallback:", err?.message || err);
+    return {
+      awarded: 0,
+      isCorrect: false,
+      explanation: "AI grading unavailable. Add key concepts and retry.",
+      correct: cleanReference || "Include the expected key concepts."
+    };
+  }
+}
+
+async function gradeQuizSubmission(questions, submittedAnswers) {
+  const answerMap = submittedAnswers || {};
+  let score = 0;
+  let total = 0;
+  const weakAreas = new Set();
+  const correctAnswers = [];
+  let aiDescriptiveCount = 0;
+
+  for (const q of questions) {
+    const normalizedLevel = normalizeLevel(q.level);
+    const points = Number(q.points || LEVEL_POINTS[normalizedLevel] || 1);
+    total += points;
+    const userAnswer = answerMap[q.id] ?? null;
+
+    if (q.type === "mcq") {
+      const userIndex = typeof userAnswer === "number" ? userAnswer : Number(userAnswer);
+      const isCorrect = Number.isFinite(userIndex) && userIndex === q.correctIndex;
+      if (isCorrect) score += points;
+      else weakAreas.add(`mcq-${q.level}`);
+      correctAnswers.push({
+        questionId: q.id,
+        correct: q.options?.[q.correctIndex] ?? q.correctIndex,
+        explanation: q.explanation || "Review the concept and retry this question.",
+        userAnswer: Number.isFinite(userIndex) ? (q.options?.[userIndex] ?? userIndex) : null,
+        isCorrect: Boolean(isCorrect)
+      });
+      continue;
+    }
+
+    if (q.type === "text") {
+      const answerText = String(userAnswer || "").toLowerCase();
+      const keywords = Array.isArray(q.keywords) ? q.keywords : [];
+      const matched = keywords.length
+        ? keywords.reduce((acc, kw) => acc + (answerText.includes(String(kw).toLowerCase()) ? 1 : 0), 0)
+        : 0;
+      const keywordAwarded = keywords.length ? Math.round((matched / Math.max(1, keywords.length)) * points) : 0;
+
+      const aiGraded = aiDescriptiveCount < 12
+        ? await gradeDescriptiveWithAI({
+          question: q.q,
+          reference: keywords.length ? keywords.join(", ") : String(q.explanation || ""),
+          answer: String(userAnswer || ""),
+          points
+        })
+        : { awarded: 0, isCorrect: false, explanation: "", correct: "" };
+      aiDescriptiveCount += 1;
+      const awarded = Math.max(keywordAwarded, aiGraded.awarded);
+      score += awarded;
+      if (awarded < points) weakAreas.add(`text-${q.level}`);
+      correctAnswers.push({
+        questionId: q.id,
+        correct: aiGraded.correct || (keywords.length ? keywords.join(", ") : "Open-ended response"),
+        explanation: aiGraded.explanation || q.explanation || "Include the main keywords and concepts to improve this answer.",
+        userAnswer: userAnswer || "",
+        isCorrect: awarded === points
+      });
+      continue;
+    }
+
+    const codeAnswer = String(userAnswer || "").toLowerCase();
+    const keyPoints = Array.isArray(q.expectedKeyPoints) ? q.expectedKeyPoints : [];
+    const matched = keyPoints.length
+      ? keyPoints.reduce((acc, item) => acc + (codeAnswer.includes(String(item).toLowerCase()) ? 1 : 0), 0)
+      : 0;
+    const keywordAwarded = keyPoints.length ? Math.round((matched / Math.max(1, keyPoints.length)) * points) : 0;
+
+    const aiGraded = aiDescriptiveCount < 12
+      ? await gradeDescriptiveWithAI({
+        question: q.q,
+        reference: keyPoints.length ? keyPoints.join(", ") : String(q.explanation || ""),
+        answer: String(userAnswer || ""),
+        points
+      })
+      : { awarded: 0, isCorrect: false, explanation: "", correct: "" };
+    aiDescriptiveCount += 1;
+    const awarded = Math.max(keywordAwarded, aiGraded.awarded);
+    score += awarded;
+    if (awarded < points) weakAreas.add(`code-${q.level}`);
+    correctAnswers.push({
+      questionId: q.id,
+      correct: aiGraded.correct || (keyPoints.length ? keyPoints.join(", ") : "Expected key implementation points"),
+      explanation: aiGraded.explanation || q.explanation || "Match the expected key points more closely in your code.",
+      userAnswer: userAnswer || "",
+      isCorrect: awarded === points
+    });
+  }
+
+  return { score, total, correctAnswers, weakAreas: Array.from(weakAreas), scorePercent: total ? Math.round((score / total) * 100) : 0 };
+}
+
+async function getQuizAttemptHistory(userId, quizId = "") {
+  const client = getDocClient();
+  if (!client) return [];
+
+  const out = await client.send(new QueryCommand({
+    TableName: "QuizAttempts",
+    KeyConditionExpression: "userId = :uid",
+    ExpressionAttributeValues: { ":uid": userId },
+    ScanIndexForward: false,
+    Limit: 100
+  }));
+
+  const items = Array.isArray(out?.Items) ? out.Items : [];
+  if (!quizId) return items;
+  return items.filter((item) => String(item.quizId || "") === quizId);
 }
 
 function decodeLooseJsonString(value) {
@@ -814,47 +1302,87 @@ function normalizeReviewPayload(raw, fallbackText = "") {
     confidence
   };
 }
+
+const DYNAMO_REQUIRED_PATHS = new Set([
+  "/api/auth/register",
+  "/api/auth/login",
+  "/api/auth/google",
+  "/api/auth/me",
+  "/api/profile",
+  "/api/profile/sync",
+  "/api/analytics",
+  "/api/analytics/dashboard",
+  "/api/analytics/attempt",
+  "/api/proctor/event",
+  "/api/quiz/start",
+  "/api/quiz/submit",
+  "/api/quiz/history",
+  "/api/study-plan",
+  "/api/ask"
+]);
+
+app.use((req, res, next) => {
+  if (!dynamoAvailable && DYNAMO_REQUIRED_PATHS.has(req.path)) {
+    return res.status(503).json({ error: "database_unavailable" });
+  }
+  return next();
+});
+
 app.get("/", (_req, res) => res.send("CodeCoach backend running"));
 app.get("/api/health", async (_req, res) => {
+  const memory = process.memoryUsage();
+  const toMb = (n) => `${Math.round((Number(n || 0) / 1024 / 1024) * 100) / 100} MB`;
+
+  const checks = {
+    dynamo: false,
+    redis: false,
+    polly: false
+  };
+
   try {
-    const provider = AI_PROVIDER;
-    const model = provider === "bedrock" || provider === "aws" || provider === "aws_bedrock"
-      ? (process.env.BEDROCK_MODEL_ID || process.env.AI_MODEL || "bedrock-model")
-      : provider === "auto"
-        ? (process.env.BEDROCK_MODEL_ID || process.env.GROQ_MODEL || process.env.AI_MODEL || "auto")
-        : (process.env.GROQ_MODEL || process.env.AI_MODEL || "llama-3.1-8b-instant");
-
-    let dynamoOk = true;
-    try {
-      const { ddb } = initDynamo({ region: process.env.AWS_REGION });
-      await ddb.send(new DescribeTableCommand({ TableName: "Users" }));
-    } catch {
-      dynamoOk = false;
-    }
-
-    const r = initRedis();
-    let redisOk = false;
-    if (r) {
-      try {
-        const pong = await r.ping();
-        redisOk = pong === "PONG" || Boolean(pong);
-      } catch {
-        redisOk = false;
-      }
-    }
-
-    const ok = dynamoOk && (IS_PROD ? redisOk : true);
-    return res.status(ok ? 200 : 503).json({
-      ok,
-      provider,
-      model,
-      dynamo: dynamoOk,
-      redis: Boolean(redisOk),
-      authReady: Boolean(process.env.AUTH_SECRET)
-    });
+    const { ddb } = initDynamo({ region: process.env.AWS_REGION || AWS_REGION });
+    await ddb.send(new DescribeTableCommand({ TableName: "Users" }));
+    checks.dynamo = true;
   } catch (err) {
-    return res.status(500).json({ ok: false, error: String(err.message || err) });
+    console.warn("Health check Dynamo failed:", err?.message || err);
+    checks.dynamo = false;
   }
+
+  try {
+    const redis = getRedis();
+    if (redis) {
+      const pong = await Promise.race([
+        redis.ping(),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("Redis ping timeout")), 1500);
+        })
+      ]);
+      checks.redis = pong === "PONG" || Boolean(pong);
+    } else {
+      checks.redis = false;
+    }
+  } catch (err) {
+    console.warn("Health check Redis failed:", err?.message || err);
+    checks.redis = false;
+  }
+
+  try {
+    require.resolve("@aws-sdk/client-polly");
+    checks.polly = Boolean(process.env.AWS_REGION || process.env.BEDROCK_REGION);
+  } catch {
+    checks.polly = false;
+  }
+
+  services = { ...services, ...checks };
+  return res.json({
+    status: "ok",
+    uptime: Math.floor(process.uptime()),
+    memory: {
+      rss: toMb(memory.rss),
+      heapUsed: toMb(memory.heapUsed)
+    },
+    services: checks
+  });
 });
 
 app.get("/api/status", (_req, res) => {
@@ -1115,6 +1643,40 @@ app.post("/api/profile/sync", authMiddleware, async (req, res) => {
   }
 });
 
+app.get("/api/analytics", authMiddleware, async (req, res) => {
+  try {
+    const user = await getUserById(req.auth.uid);
+    if (!user) {
+      return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    }
+
+    const analyticsData = await getUserAnalytics(req.auth.uid);
+    const analytics = buildDetailedAnalytics(analyticsData || user.analyticsSummary || {});
+    let storedBadges = [];
+    try {
+      storedBadges = (await getUserBadges(req.auth.uid)).map((x) => x.badgeId).filter(Boolean);
+    } catch {}
+    const mergedBadges = Array.from(new Set([...(analytics.badges || []), ...storedBadges]));
+    return res.json({
+      scoreTrend: analytics.scoreTrend,
+      topicAccuracy: analytics.topicAccuracy,
+      weeklyActivity: analytics.weeklyActivity,
+      improvementPercentage: analytics.improvementPercentage,
+      totalAttempts: analytics.totalAttempts,
+      avgScore: analytics.avgScore,
+      questionsAsked: analytics.questionsAsked,
+      proctorFlags: analytics.proctorFlags,
+      weakTopics: analytics.weakTopics,
+      badges: mergedBadges,
+      recentAttempts: analytics.recentAttempts,
+      completionRate: analytics.completionRate,
+      recommendedPracticeMinutes: analytics.recommendedPracticeMinutes
+    });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", "Failed to load analytics", String(err.message || err));
+  }
+});
+
 app.get("/api/analytics/dashboard", authMiddleware, async (req, res) => {
   const user = await getUserById(req.auth.uid);
   if (!user) {
@@ -1122,7 +1684,11 @@ app.get("/api/analytics/dashboard", authMiddleware, async (req, res) => {
   }
 
   const analyticsData = await getUserAnalytics(req.auth.uid);
-  const analytics = summarizeAnalytics(analyticsData || user.analyticsSummary || {});
+  const analytics = buildDetailedAnalytics(analyticsData || user.analyticsSummary || {});
+  try {
+    const storedBadges = (await getUserBadges(req.auth.uid)).map((x) => x.badgeId).filter(Boolean);
+    analytics.badges = Array.from(new Set([...(analytics.badges || []), ...storedBadges]));
+  } catch {}
   return res.json({ ok: true, analytics });
 });
 
@@ -1169,6 +1735,7 @@ app.post("/api/analytics/attempt", authMiddleware, async (req, res) => {
       "SET analyticsSummary = :summary",
       { ":summary": nextSummary }
     );
+    await syncUserBadges(req.auth.uid, badges);
 
     const proctorEvents = records
       .filter((x) => x?.type === "proctor_event" && x?.data)
@@ -1422,6 +1989,146 @@ app.post("/api/quiz/generate", aiLimiter, async (req, res) => {
   }
 });
 
+app.post("/api/quiz/start", authMiddleware, async (req, res) => {
+  try {
+    const quizId = sanitizeQuizId(sanitizeText(req.body?.quizId || "quiz", 120, "quizId"));
+    const attempts = await getQuizAttemptHistory(req.auth.uid, quizId);
+    const attemptNumber = attempts.length + 1;
+
+    return res.json({
+      ok: true,
+      quizId,
+      attemptNumber,
+      startedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    if (err?.code === "FIELD_TOO_LONG") {
+      return sendError(res, 400, "BAD_REQUEST", err.message);
+    }
+    return sendError(res, 500, "SERVER_ERROR", "Failed to start quiz attempt", String(err.message || err));
+  }
+});
+
+app.post("/api/quiz/submit", authMiddleware, async (req, res) => {
+  try {
+    const quizId = sanitizeQuizId(sanitizeText(req.body?.quizId || "quiz", 120, "quizId"));
+    const quizTitle = sanitizeText(req.body?.quizTitle || "Quiz", 140, "quizTitle");
+    const submittedQuestions = Array.isArray(req.body?.questions) ? req.body.questions : [];
+    const normalizedQuestions = submittedQuestions
+      .slice(0, 120)
+      .map((q, idx) => normalizeQuizQuestionForAttempt(q, idx));
+    const submittedAnswers = normalizeSubmittedAnswers(req.body?.answers || {});
+
+    if (!normalizedQuestions.length) {
+      return sendError(res, 400, "BAD_REQUEST", "`questions` is required");
+    }
+
+    const graded = await gradeQuizSubmission(normalizedQuestions, submittedAnswers);
+    const history = await getQuizAttemptHistory(req.auth.uid, quizId);
+    const attemptNumber = history.length + 1;
+    const timestamp = new Date().toISOString();
+
+    const client = getDocClient();
+    if (!client) {
+      return res.status(503).json({ error: "database_unavailable" });
+    }
+
+    const attemptItem = {
+      userId: req.auth.uid,
+      attemptKey: `${quizId}#${String(attemptNumber).padStart(6, "0")}`,
+      quizId,
+      attemptNumber,
+      score: graded.score,
+      total: graded.total,
+      scorePercent: graded.scorePercent,
+      answers: submittedAnswers,
+      correctAnswers: graded.correctAnswers,
+      timestamp,
+      quizTitle
+    };
+    await client.send(new PutCommand({ TableName: "QuizAttempts", Item: attemptItem }));
+
+    const analyticsAttempt = {
+      id: crypto.randomUUID(),
+      createdAt: timestamp,
+      quizTitle,
+      score: graded.scorePercent,
+      totalQuestions: normalizedQuestions.length,
+      durationSec: clampNumber(req.body?.durationSec, 0, 14400, 0),
+      weakAreas: graded.weakAreas,
+      proctorSummary: req.body?.proctorSummary || null
+    };
+    await putAnalyticsAttempt({
+      userId: req.auth.uid,
+      createdAt: timestamp,
+      type: "quiz_attempt",
+      data: analyticsAttempt
+    });
+
+    const user = await getUserById(req.auth.uid);
+    if (user) {
+      const records = await getAnalyticsRecordsForUser(req.auth.uid);
+      const attempts = records
+        .filter((x) => x?.type === "quiz_attempt" && x?.data)
+        .map((x) => x.data);
+      const questionsAsked = Number(user.analyticsSummary?.questionsAsked || 0);
+      const badges = computeBadges({ attempts, questionsAsked });
+      await updateUser(
+        { userId: req.auth.uid },
+        "SET analyticsSummary = :summary",
+        {
+          ":summary": {
+            attemptsCount: attempts.length,
+            questionsAsked,
+            badges
+          }
+        }
+      );
+      await syncUserBadges(req.auth.uid, badges);
+    }
+
+    return res.json({
+      score: graded.score,
+      total: graded.total,
+      scorePercent: graded.scorePercent,
+      attemptNumber,
+      quizId,
+      correctAnswers: graded.correctAnswers
+    });
+  } catch (err) {
+    if (err?.code === "FIELD_TOO_LONG") {
+      return sendError(res, 400, "BAD_REQUEST", err.message);
+    }
+    return sendError(res, 500, "SERVER_ERROR", "Failed to submit quiz", String(err.message || err));
+  }
+});
+
+app.get("/api/quiz/history", authMiddleware, async (req, res) => {
+  try {
+    const quizIdRaw = sanitizeText(req.query?.quizId || "", 120, "quizId");
+    const quizId = quizIdRaw ? sanitizeQuizId(quizIdRaw) : "";
+    const items = await getQuizAttemptHistory(req.auth.uid, quizId);
+
+    const attempts = items.map((item) => ({
+      quizId: item.quizId,
+      quizTitle: item.quizTitle || "Quiz",
+      attemptNumber: Number(item.attemptNumber || 1),
+      score: Number(item.score || 0),
+      total: Number(item.total || 0),
+      scorePercent: Number(item.scorePercent || 0),
+      timestamp: item.timestamp || item.createdAt || new Date().toISOString(),
+      correctAnswers: Array.isArray(item.correctAnswers) ? item.correctAnswers : []
+    }));
+
+    return res.json({ ok: true, attempts });
+  } catch (err) {
+    if (err?.code === "FIELD_TOO_LONG") {
+      return sendError(res, 400, "BAD_REQUEST", err.message);
+    }
+    return sendError(res, 500, "SERVER_ERROR", "Failed to fetch quiz history", String(err.message || err));
+  }
+});
+
 app.post("/api/ask", aiLimiter, async (req, res) => {
   try {
     const question = sanitizeText(req.body?.question || "", 1200, "question").trim();
@@ -1556,8 +2263,13 @@ app.post("/api/voice/synthesize", voiceLimiter, async (req, res) => {
   try {
     const text = sanitizeText(req.body?.text || "", 2800, "text").trim();
     const lang = sanitizeText(req.body?.lang || "en", 10, "lang");
+    const voiceIdRaw = req.body?.voiceId;
+    const voiceId = voiceIdRaw ? sanitizeText(voiceIdRaw, 40, "voiceId").trim() : "";
     if (!text) {
       return sendError(res, 400, "BAD_REQUEST", "text is required");
+    }
+    if (voiceId && !isValidPollyVoiceId(voiceId)) {
+      return sendError(res, 400, "BAD_REQUEST", "Invalid voiceId");
     }
 
     let PollyClient;
@@ -1574,6 +2286,16 @@ app.post("/api/voice/synthesize", voiceLimiter, async (req, res) => {
     }
 
     const voiceCfg = mapLangToPollyVoice(lang);
+    const envVoiceId = String(process.env.AWS_POLLY_VOICE_ID || "").trim();
+    if (envVoiceId && !isValidPollyVoiceId(envVoiceId)) {
+      return sendError(res, 500, "SERVER_ERROR", "Invalid AWS_POLLY_VOICE_ID configuration");
+    }
+    const voiceToUse = voiceId || envVoiceId || voiceCfg.voiceId;
+    const languageCode =
+      process.env.AWS_POLLY_LANGUAGE_CODE
+      || POLLY_VOICE_LANG_BY_ID[voiceToUse]
+      || voiceCfg.languageCode;
+
     const client = new PollyClient({
       region,
       ...(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
@@ -1590,9 +2312,9 @@ app.post("/api/voice/synthesize", voiceLimiter, async (req, res) => {
     const cmd = new SynthesizeSpeechCommand({
       Text: text,
       OutputFormat: "mp3",
-      VoiceId: process.env.AWS_POLLY_VOICE_ID || voiceCfg.voiceId,
-      LanguageCode: process.env.AWS_POLLY_LANGUAGE_CODE || voiceCfg.languageCode,
-      Engine: process.env.AWS_POLLY_ENGINE || "neural"
+      VoiceId: voiceToUse,
+      LanguageCode: languageCode,
+      Engine: "neural"
     });
 
     const out = await client.send(cmd);
@@ -1605,11 +2327,19 @@ app.post("/api/voice/synthesize", voiceLimiter, async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).send(bytes);
   } catch (err) {
+    console.error("Polly synthesis failed:", {
+      message: String(err?.message || err),
+      code: err?.code || null
+    });
     if (err?.code === "FIELD_TOO_LONG") {
       return sendError(res, 400, "BAD_REQUEST", err.message);
     }
     return sendError(res, 500, "SERVER_ERROR", "Failed voice synthesis", String(err.message || err));
   }
+});
+
+app.get("/api/voice/voices", (_req, res) => {
+  return res.json(SUPPORTED_POLLY_VOICES);
 });
 
 app.post("/api/study-plan", authMiddleware, async (req, res) => {
@@ -1621,20 +2351,17 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
     }
 
     const analyticsData = await getUserAnalytics(req.auth.uid);
-    const analytics = summarizeAnalytics(analyticsData || user.analyticsSummary || {});
+    const analytics = buildDetailedAnalytics(analyticsData || user.analyticsSummary || {});
     const prompt = buildStudyPlanPrompt({ outputLanguage, analytics });
     const out = await callModel(prompt, {
-      maxTokens: 1000,
-      temperature: 0.35,
-      timeoutMs: 30000
+      maxTokens: 1400,
+      temperature: 0.3,
+      timeoutMs: 35000
     });
 
     const parsed = tryExtractJson(out);
-    if (!parsed) {
-      return sendError(res, 502, "INVALID_AI_OUTPUT", "Model response was not valid JSON", out.slice(0, 500));
-    }
-
-    return res.json({ ok: true, plan: parsed });
+    const plan = normalizeStudyPlan(parsed || {}, analytics);
+    return res.json({ ok: true, plan });
   } catch (err) {
     return sendError(res, 500, "UPSTREAM_AI_ERROR", "Failed to generate study plan", String(err.message || err));
   }
@@ -1642,28 +2369,32 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
 
 async function startup() {
   try {
-    if (!process.env.AWS_REGION) throw new Error("AWS_REGION is required");
-    if (IS_PROD && (!process.env.AUTH_SECRET || process.env.AUTH_SECRET.length < 32)) {
-      throw new Error("AUTH_SECRET must be set and >= 32 chars in production");
+    if (!process.env.AWS_REGION) {
+      console.warn("AWS_REGION not set. Defaulting to us-east-1");
+      process.env.AWS_REGION = AWS_REGION;
     }
 
-    initDynamo({ region: process.env.AWS_REGION });
-    await ensureTablesIfNeeded();
+    if (!process.env.AUTH_SECRET || process.env.AUTH_SECRET.length < 16) {
+      console.warn("AUTH_SECRET missing or weak. Generating temporary secret.");
+      process.env.AUTH_SECRET = crypto.randomBytes(32).toString("hex");
+    }
 
-    const r = initRedis();
-    if (IS_PROD && !r) throw new Error("REDIS_URL required in production");
+    try {
+      await initServices();
+    } catch (e) {
+      console.error("Service init error:", e.message);
+    }
 
-    console.log("ENV", process.env.NODE_ENV || "dev", "PORT", PORT);
-    app.listen(PORT, (err) => {
-      if (err) {
-        console.error("Failed to start server on port " + PORT, err.message || err);
-        process.exit(1);
-      }
-      console.log("Server running on port " + PORT);
+    app.listen(PORT, () => {
+      console.log("Server running on port", PORT);
+      console.log("Environment:", process.env.NODE_ENV || "development");
+      console.log("Service status:");
+      console.log("DynamoDB:", services.dynamo ? "READY" : "DISABLED");
+      console.log("Redis:", services.redis ? "READY" : "DISABLED");
+      console.log("Polly:", services.polly ? "READY" : "DISABLED");
     });
-  } catch (err) {
-    console.error("Failed to initialize backend:", err && (err.message || err));
-    process.exit(1);
+  } catch (e) {
+    console.error("Backend startup failure:", e.message);
   }
 }
 

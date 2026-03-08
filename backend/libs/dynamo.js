@@ -8,7 +8,8 @@ const {
 const {
   DynamoDBDocumentClient,
   PutCommand,
-  UpdateCommand
+  UpdateCommand,
+  QueryCommand
 } = require("@aws-sdk/lib-dynamodb");
 
 let ddb;
@@ -102,6 +103,32 @@ async function ensureTablesIfNeeded() {
     KeySchema: [{ AttributeName: "sessionId", KeyType: "HASH" }]
   });
 
+  await ensureTable("QuizAttempts", {
+    TableName: "QuizAttempts",
+    BillingMode: "PAY_PER_REQUEST",
+    AttributeDefinitions: [
+      { AttributeName: "userId", AttributeType: "S" },
+      { AttributeName: "attemptKey", AttributeType: "S" }
+    ],
+    KeySchema: [
+      { AttributeName: "userId", KeyType: "HASH" },
+      { AttributeName: "attemptKey", KeyType: "RANGE" }
+    ]
+  });
+
+  await ensureTable("UserBadges", {
+    TableName: "UserBadges",
+    BillingMode: "PAY_PER_REQUEST",
+    AttributeDefinitions: [
+      { AttributeName: "userId", AttributeType: "S" },
+      { AttributeName: "badgeId", AttributeType: "S" }
+    ],
+    KeySchema: [
+      { AttributeName: "userId", KeyType: "HASH" },
+      { AttributeName: "badgeId", KeyType: "RANGE" }
+    ]
+  });
+
   try {
     await ddb.send(new UpdateTimeToLiveCommand({
       TableName: "Sessions",
@@ -152,11 +179,43 @@ async function putAnalyticsAttempt(record) {
   }
 }
 
+async function putUserBadge({ userId, badgeId, earnedAt }) {
+  try {
+    return await ddbDocClient().send(new PutCommand({
+      TableName: "UserBadges",
+      Item: {
+        userId,
+        badgeId,
+        earnedAt: earnedAt || new Date().toISOString()
+      }
+    }));
+  } catch (err) {
+    console.error("[dynamo] putUserBadge failed:", err?.message || err);
+    throw err;
+  }
+}
+
+async function getUserBadges(userId) {
+  try {
+    const out = await ddbDocClient().send(new QueryCommand({
+      TableName: "UserBadges",
+      KeyConditionExpression: "userId = :uid",
+      ExpressionAttributeValues: { ":uid": userId }
+    }));
+    return Array.isArray(out?.Items) ? out.Items : [];
+  } catch (err) {
+    console.error("[dynamo] getUserBadges failed:", err?.message || err);
+    throw err;
+  }
+}
+
 module.exports = {
   initDynamo,
   ensureTablesIfNeeded,
   ddbDocClient,
   putUser,
   updateUser,
-  putAnalyticsAttempt
+  putAnalyticsAttempt,
+  putUserBadge,
+  getUserBadges
 };

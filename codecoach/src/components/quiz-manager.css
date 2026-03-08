@@ -44,6 +44,8 @@
   cursor: pointer;
   color: var(--on-brand);
   background: linear-gradient(135deg, var(--brand), color-mix(in srgb, var(--brand) 58%, #fff));
+  transition: transform 120ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--brand) 28%, transparent);
 }
 
 .qm-btn.ghost {
@@ -59,6 +61,33 @@
 
 .qm-btn.generate {
   background: linear-gradient(135deg, var(--accent-violet), var(--brand));
+}
+
+.qm-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--brand) 36%, transparent);
+}
+
+.qm-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  border-color: color-mix(in srgb, var(--accent-cyan) 50%, var(--line-strong));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent-cyan) 32%, transparent),
+    0 0 20px color-mix(in srgb, var(--brand) 52%, transparent);
+}
+
+.qm-btn:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent-cyan) 52%, var(--line-strong));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent-cyan) 32%, transparent),
+    0 0 16px color-mix(in srgb, var(--brand) 52%, transparent);
+}
+
+.qm-btn:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .generator-card,

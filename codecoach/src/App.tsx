@@ -1,9 +1,23 @@
-﻿import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
+import { Bar, Line } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+} from "chart.js";
 import Modal from "./components/Modal";
 import QuizManager from "./components/QuizManager";
 import ChatbotAvatarSync from "./components/ChatbotAvatarSync";
 import "./App.css";
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend);
 
 type ExplainResp = {
   ok?: boolean;
@@ -65,6 +79,11 @@ type AnalyticsData = {
   scoreTrend: { at: string; score: number }[];
   weakTopics: { topic: string; count: number }[];
   badges: string[];
+  topicAccuracy?: { topic: string; accuracy: number }[];
+  weeklyActivity?: { day: string; attempts: number }[];
+  improvementPercentage?: number;
+  completionRate?: number;
+  recommendedPracticeMinutes?: number;
   recentAttempts: {
     id: string;
     quizTitle: string;
@@ -75,8 +94,12 @@ type AnalyticsData = {
 };
 
 type StudyPlan = {
-  title?: string;
-  daily_plan?: { day: number; focus: string; task: string; practice_minutes: number }[];
+  title: string;
+  recommendedPracticeMinutes: number;
+  weakTopics: string[];
+  quizSuggestions: string[];
+  revisionReminders: string[];
+  days: { day: string; topics: string[]; tasks: string[]; practiceMinutes: number }[];
   tips?: string[];
 };
 
@@ -89,13 +112,11 @@ type MentorContentChunk =
   | { kind: "text"; value: string }
   | { kind: "code"; value: string; language: string };
 
-type RunLanguage = "javascript" | "python" | "java" | "cpp" | "c" | "typescript" | "go" | "rust";
-
 type GoogleWindow = Window & typeof globalThis & {
   google?: any;
 };
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:4000").replace(/\/$/, "");
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8080").replace(/\/$/, "");
 const AUTH_TOKEN_KEY = "codecoach-auth-token";
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
 
@@ -161,6 +182,25 @@ async function parseApiError(response: Response) {
   return message;
 }
 
+function normalizeAnalyticsPayload(payload: any): AnalyticsData {
+  const src = payload?.analytics || payload || {};
+  return {
+    totalAttempts: Number(src.totalAttempts || 0),
+    avgScore: Number(src.avgScore || 0),
+    questionsAsked: Number(src.questionsAsked || 0),
+    proctorFlags: Number(src.proctorFlags || 0),
+    scoreTrend: Array.isArray(src.scoreTrend) ? src.scoreTrend : [],
+    weakTopics: Array.isArray(src.weakTopics) ? src.weakTopics : [],
+    badges: Array.isArray(src.badges) ? src.badges : [],
+    topicAccuracy: Array.isArray(src.topicAccuracy) ? src.topicAccuracy : [],
+    weeklyActivity: Array.isArray(src.weeklyActivity) ? src.weeklyActivity : [],
+    improvementPercentage: Number(src.improvementPercentage || 0),
+    completionRate: Number(src.completionRate || 0),
+    recommendedPracticeMinutes: Number(src.recommendedPracticeMinutes || 45),
+    recentAttempts: Array.isArray(src.recentAttempts) ? src.recentAttempts : []
+  };
+}
+
 function parseMentorContent(content: string): MentorContentChunk[] {
   const source = String(content || "");
   const chunks: MentorContentChunk[] = [];
@@ -219,13 +259,9 @@ export default function App() {
   const [avatarTranscript, setAvatarTranscript] = useState<string>("");
   const [autoPlayAvatar, setAutoPlayAvatar] = useState(false);
   const [quizModalOpen, setQuizModalOpen] = useState(false);
+  const [quizLocked, setQuizLocked] = useState(false);
   const [flashcardsOpen, setFlashcardsOpen] = useState(false);
   const [editorWidthPct, setEditorWidthPct] = useState(66);
-  const [editorOutputSplit, setEditorOutputSplit] = useState(68);
-  const [runBusy, setRunBusy] = useState(false);
-  const [runOutput, setRunOutput] = useState("");
-  const [runError, setRunError] = useState("");
-  const [runLanguage, setRunLanguage] = useState<RunLanguage>("javascript");
 
   const [authToken, setAuthToken] = useState<string | null>(() => localStorage.getItem(AUTH_TOKEN_KEY));
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -248,6 +284,8 @@ export default function App() {
   const [askInput, setAskInput] = useState("");
   const [askMessages, setAskMessages] = useState<ChatMessage[]>([]);
   const [askFollowups, setAskFollowups] = useState<string[]>([]);
+  const [speechListening, setSpeechListening] = useState(false);
+  const speechSupported = Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   const selectedLanguageLabel =
     EXPLANATION_LANGUAGES.find((lang) => lang.code === selectedLanguage)?.label ?? "English";
@@ -257,6 +295,49 @@ export default function App() {
     `${result?.summary ?? ""} ${(result?.responsibilities ?? []).join(". ")}`.trim();
 
   const quickFacts = useMemo(() => buildQuickFacts(result), [result]);
+  const scoreTrendChartData = useMemo(() => {
+    const points = analytics?.scoreTrend || [];
+    return {
+      labels: points.map((p) => new Date(p.at).toLocaleDateString()),
+      datasets: [
+        {
+          label: "Score",
+          data: points.map((p) => p.score),
+          borderColor: "#7dd3fc",
+          backgroundColor: "rgba(125, 211, 252, 0.2)",
+          tension: 0.3
+        }
+      ]
+    };
+  }, [analytics]);
+
+  const topicAccuracyData = useMemo(() => {
+    const rows = analytics?.topicAccuracy || [];
+    return {
+      labels: rows.map((r) => r.topic),
+      datasets: [
+        {
+          label: "Accuracy %",
+          data: rows.map((r) => r.accuracy),
+          backgroundColor: "rgba(74, 222, 128, 0.5)"
+        }
+      ]
+    };
+  }, [analytics]);
+
+  const weeklyActivityData = useMemo(() => {
+    const rows = analytics?.weeklyActivity || [];
+    return {
+      labels: rows.map((r) => r.day),
+      datasets: [
+        {
+          label: "Attempts",
+          data: rows.map((r) => r.attempts),
+          backgroundColor: "rgba(196, 181, 253, 0.5)"
+        }
+      ]
+    };
+  }, [analytics]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -596,17 +677,43 @@ export default function App() {
   }
 
   async function loadAnalytics() {
-    if (!authToken) return;
+    if (!authToken) {
+      setAnalyticsError("Login required to load analytics.");
+      setAnalytics(null);
+      return;
+    }
     setAnalyticsLoading(true);
     setAnalyticsError("");
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/analytics/dashboard`, {
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
-      if (!res.ok) throw new Error(await parseApiError(res));
-      const payload = await res.json();
-      setAnalytics(payload.analytics || null);
+      const endpoints = ["/api/analytics", "/api/analytics/dashboard"];
+      let loaded = false;
+      let lastError = "Analytics endpoint not available";
+
+      for (const endpoint of endpoints) {
+        const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+
+        if (res.ok) {
+          const payload = await res.json();
+          setAnalytics(normalizeAnalyticsPayload(payload));
+          loaded = true;
+          break;
+        }
+
+        if (res.status === 404) {
+          lastError = `Analytics endpoint missing: ${endpoint}`;
+          continue;
+        }
+
+        lastError = await parseApiError(res);
+        break;
+      }
+
+      if (!loaded) {
+        throw new Error(lastError);
+      }
     } catch (err: any) {
       setAnalyticsError(err?.message || "Failed to load analytics");
     } finally {
@@ -677,44 +784,49 @@ export default function App() {
     }
   }
 
+  function getSpeechLocale(langCode: string) {
+    if (langCode === "hi") return "hi-IN";
+    if (langCode === "es") return "es-ES";
+    if (langCode === "fr") return "fr-FR";
+    if (langCode === "de") return "de-DE";
+    if (langCode === "ta") return "ta-IN";
+    if (langCode === "te") return "te-IN";
+    return "en-US";
+  }
+
+  function startVoiceInput() {
+    const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setAskMessages((prev) => [...prev, { role: "assistant", content: "Speech recognition is not supported in this browser." }]);
+      return;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = getSpeechLocale(selectedLanguage);
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setSpeechListening(true);
+    recognition.onerror = (event: any) => {
+      setSpeechListening(false);
+      setAskMessages((prev) => [...prev, { role: "assistant", content: `Mic error: ${event?.error || "speech recognition failed"}` }]);
+    };
+    recognition.onend = () => setSpeechListening(false);
+    recognition.onresult = (event: any) => {
+      const transcript = String(event?.results?.[0]?.[0]?.transcript || "").trim();
+      if (transcript) {
+        setAskInput(transcript);
+      }
+    };
+
+    recognition.start();
+  }
+
   function startSplitResize(ev: React.MouseEvent<HTMLDivElement>) {
     ev.preventDefault();
     resizingSplitRef.current = true;
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-  }
-
-  async function runCodePreview() {
-    setRunBusy(true);
-    setRunError("");
-    setRunOutput("Running...");
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ language: runLanguage, code })
-      });
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload?.message || payload?.detail || `Execution failed (${res.status})`);
-      }
-      const combined = [payload.compileOutput, payload.stdout, payload.output, payload.stderr]
-        .filter(Boolean)
-        .join("\n")
-        .trim();
-      setRunOutput(combined || "No output.");
-    } catch (err: any) {
-      setRunError(err?.stack || err?.message || String(err));
-      setRunOutput("");
-    } finally {
-      setRunBusy(false);
-    }
-  }
-
-  function clearRunOutput() {
-    setRunError("");
-    setRunOutput("");
   }
 
   function renderMentorMessage(content: string) {
@@ -849,7 +961,7 @@ export default function App() {
 
           <div className="editor-frame">
             <Editor
-              height={`${editorOutputSplit}vh`}
+              height="62vh"
               defaultLanguage="javascript"
               defaultValue={code}
               value={code}
@@ -864,50 +976,6 @@ export default function App() {
               }}
             />
           </div>
-
-          <div className="editor-output-slider-row">
-            <span>Editor / Output Split</span>
-            <input
-              type="range"
-              min={50}
-              max={78}
-              value={editorOutputSplit}
-              onChange={(e) => setEditorOutputSplit(Number(e.target.value))}
-            />
-          </div>
-
-          <section className="editor-terminal">
-            <div className="terminal-toolbar">
-              <strong>{`Code Output (${runLanguage})`}</strong>
-              <div className="terminal-actions">
-                <label className="terminal-lang">
-                  <span>Language</span>
-                  <select value={runLanguage} onChange={(e) => setRunLanguage(e.target.value as RunLanguage)}>
-                    <option value="javascript">JavaScript</option>
-                    <option value="python">Python</option>
-                    <option value="java">Java</option>
-                    <option value="cpp">C++</option>
-                    <option value="c">C</option>
-                    <option value="typescript">TypeScript</option>
-                    <option value="go">Go</option>
-                    <option value="rust">Rust</option>
-                  </select>
-                </label>
-                <button className="btn-tertiary" onClick={runCodePreview} disabled={runBusy}>
-                  {runBusy ? "Running..." : "Run Code"}
-                </button>
-                <button className="btn-tertiary" onClick={clearRunOutput} disabled={runBusy}>
-                  Clear
-                </button>
-              </div>
-            </div>
-            <pre className={`terminal-output ${runError ? "error" : ""}`}>
-              {runError || runOutput || "Click Run Code to execute your selected language and preview output here."}
-            </pre>
-            <p className="terminal-note">
-              Code is executed by the backend runner service with language-specific runtimes and timeouts.
-            </p>
-          </section>
         </section>
 
         <div
@@ -1006,13 +1074,23 @@ export default function App() {
             </>
           )}
 
-          <Modal open={quizModalOpen} onClose={() => setQuizModalOpen(false)} title="Quiz Manager">
+          <Modal
+            open={quizModalOpen}
+            onClose={() => {
+              if (quizLocked) return;
+              setQuizModalOpen(false);
+              setQuizLocked(false);
+            }}
+            disableClose={quizLocked}
+            title={quizLocked ? "Quiz Manager (Proctored Attempt Active)" : "Quiz Manager"}
+          >
             <QuizManager
               apiBaseUrl={API_BASE_URL}
               preferredLanguage={selectedLanguageLabel}
               contextCode={code}
               authToken={authToken}
               onAttemptRecorded={loadAnalytics}
+              onProctorLockChange={setQuizLocked}
             />
           </Modal>
         </aside>
@@ -1047,6 +1125,9 @@ export default function App() {
               onChange={(e) => setAskInput(e.target.value)}
               placeholder="Ask a concept or code question"
             />
+            <button className="btn-tertiary" onClick={startVoiceInput} disabled={!speechSupported || speechListening}>
+              {speechListening ? "Listening..." : "Mic"}
+            </button>
             <button className="btn-tertiary" onClick={() => askQuestion()} disabled={askLoading}>{askLoading ? "Thinking..." : "Ask"}</button>
           </div>
 
@@ -1135,14 +1216,37 @@ export default function App() {
               </section>
 
               <section className="analytics-card">
-                <h4>Recent Scores</h4>
-                {analytics.scoreTrend.length === 0 && <p>No attempts yet.</p>}
-                <div className="trend-bars">
-                  {analytics.scoreTrend.slice(-8).map((point, idx) => (
-                    <div key={`${point.at}-${idx}`} className="trend-item">
-                      <div className="trend-bar" style={{ height: `${Math.max(8, point.score)}%` }} />
-                      <span>{point.score}</span>
-                    </div>
+                <h4>Improvement Snapshot</h4>
+                <div className="analytics-grid">
+                  <article><strong>{analytics.improvementPercentage ?? 0}%</strong><span>Improvement</span></article>
+                  <article><strong>{analytics.completionRate ?? 0}%</strong><span>Completion rate</span></article>
+                  <article><strong>{analytics.recommendedPracticeMinutes ?? 45} min</strong><span>Daily target</span></article>
+                </div>
+              </section>
+
+              <section className="analytics-card">
+                <h4>Quiz Score Trend</h4>
+                {analytics.scoreTrend.length === 0 ? <p>No attempts yet.</p> : <Line data={scoreTrendChartData} />}
+              </section>
+
+              <section className="analytics-card">
+                <h4>Topic Accuracy</h4>
+                {(analytics.topicAccuracy || []).length === 0 ? <p>No topic accuracy yet.</p> : <Bar data={topicAccuracyData} />}
+              </section>
+
+              <section className="analytics-card">
+                <h4>Weekly Study Activity</h4>
+                {(analytics.weeklyActivity || []).length === 0 ? <p>No activity yet.</p> : <Bar data={weeklyActivityData} />}
+              </section>
+
+              <section className="analytics-card">
+                <h4>Recent Attempts</h4>
+                <div className="plan-list">
+                  {(analytics.recentAttempts || []).slice(-6).map((attempt, idx) => (
+                    <article key={`${attempt.quizTitle}-${attempt.createdAt}-${idx}`}>
+                      <strong>{attempt.quizTitle || "Quiz"}</strong>
+                      <p>{`${attempt.score}% (${attempt.totalQuestions} Q)`}</p>
+                    </article>
                   ))}
                 </div>
               </section>
@@ -1153,13 +1257,27 @@ export default function App() {
             <section className="analytics-card">
               <h4>{studyPlan.title || "7-Day Plan"}</h4>
               <div className="plan-list">
-                {(studyPlan.daily_plan || []).map((d) => (
+                {(studyPlan.days || []).map((d) => (
                   <article key={d.day}>
-                    <strong>{`Day ${d.day}: ${d.focus}`}</strong>
-                    <p>{`${d.task} (${d.practice_minutes} mins)`}</p>
+                    <strong>{`${d.day} (${d.practiceMinutes} mins)`}</strong>
+                    <p>{d.topics.join(", ")}</p>
+                    <p>{d.tasks.join(" | ")}</p>
                   </article>
                 ))}
               </div>
+              {studyPlan.weakTopics?.length > 0 && (
+                <p>{`Weak topics focus: ${studyPlan.weakTopics.join(", ")}`}</p>
+              )}
+              {studyPlan.quizSuggestions?.length > 0 && (
+                <ul>
+                  {studyPlan.quizSuggestions.map((item, i) => <li key={`${item}-${i}`}>{item}</li>)}
+                </ul>
+              )}
+              {studyPlan.revisionReminders?.length > 0 && (
+                <ul>
+                  {studyPlan.revisionReminders.map((item, i) => <li key={`${item}-${i}`}>{item}</li>)}
+                </ul>
+              )}
               {(studyPlan.tips || []).length > 0 && (
                 <ul>
                   {studyPlan.tips?.map((tip, i) => <li key={`${tip}-${i}`}>{tip}</li>)}
@@ -1182,4 +1300,6 @@ export default function App() {
     </div>
   );
 }
+
+
 

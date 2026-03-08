@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import "./quiz-manager.css";
 
 type QuestionLevel = "easy" | "medium" | "hard";
@@ -45,12 +45,32 @@ type Answer = {
   pointsAwarded?: number;
 };
 
+type CorrectAnswerFeedback = {
+  questionId: string;
+  correct: string;
+  explanation: string;
+  userAnswer: string | number | null;
+  isCorrect: boolean;
+};
+
+type QuizAttempt = {
+  quizId: string;
+  quizTitle: string;
+  attemptNumber: number;
+  score: number;
+  total: number;
+  scorePercent: number;
+  timestamp: string;
+  correctAnswers?: CorrectAnswerFeedback[];
+};
+
 type QuizManagerProps = {
   apiBaseUrl?: string;
   preferredLanguage?: string;
   contextCode?: string;
   authToken?: string | null;
   onAttemptRecorded?: () => void;
+  onProctorLockChange?: (locked: boolean) => void;
 };
 
 type GenerateType = "mixed" | QuestionType;
@@ -155,22 +175,79 @@ function formatDuration(seconds: number) {
   return `${m}:${s}`;
 }
 
+function sanitizeQuizId(raw: string) {
+  return String(raw || "quiz").toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 80) || "quiz";
+}
+
+function escapeHtml(raw: string) {
+  return String(raw || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildStarterQuiz(contextCode = ""): Quiz {
+  const starterCode = String(contextCode || "").trim();
+  const snippet = starterCode ? starterCode.slice(0, 420) : "function sum(a, b) {\n  return a + b;\n}";
+  return {
+    title: "Quick Start Quiz",
+    description: "This starter quiz is preloaded so grading and reports work immediately.",
+    questions: [
+      {
+        id: "q1",
+        type: "mcq",
+        q: "What is the output type of `sum(2, 3)` in JavaScript?",
+        level: "easy",
+        points: 1,
+        options: ["string", "number", "boolean", "object"],
+        correctIndex: 1
+      },
+      {
+        id: "q2",
+        type: "text",
+        q: "Explain the difference between null and undefined in JavaScript.",
+        level: "medium",
+        points: 2,
+        keywords: ["null", "undefined", "assigned", "intentional"]
+      },
+      {
+        id: "q3",
+        type: "code",
+        q: "Improve this function to safely handle non-number inputs.",
+        level: "hard",
+        points: 3,
+        starterCode: snippet,
+        expectedKeyPoints: ["Number", "typeof", "NaN", "return"]
+      }
+    ]
+  };
+}
+
 export default function QuizManager({
-  apiBaseUrl = "http://localhost:4000",
+  apiBaseUrl = "http://localhost:8080",
   preferredLanguage = "English",
   contextCode = "",
   authToken = null,
-  onAttemptRecorded
+  onAttemptRecorded,
+  onProctorLockChange
 }: QuizManagerProps) {
-  const [quiz, setQuiz] = useState<Quiz | null>(null);
+  const takeSectionRef = useRef<HTMLElement | null>(null);
+  const [quiz, setQuiz] = useState<Quiz | null>(() => buildStarterQuiz(contextCode));
   const [mode, setMode] = useState<"editor" | "take" | "results">("take");
   const [answers, setAnswers] = useState<Record<string, Answer>>({});
   const [score, setScore] = useState<number | null>(null);
+  const [scoreBreakdown, setScoreBreakdown] = useState<{ score: number; total: number; scorePercent: number } | null>(null);
+  const [answerFeedback, setAnswerFeedback] = useState<Record<string, CorrectAnswerFeedback>>({});
+  const [attemptHistory, setAttemptHistory] = useState<QuizAttempt[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [busyGenerating, setBusyGenerating] = useState(false);
   const [generateError, setGenerateError] = useState("");
   const [grading, setGrading] = useState(false);
 
   const [proctorEnabled, setProctorEnabled] = useState(false);
+  const [proctorActive, setProctorActive] = useState(false);
   const [proctorWarnings, setProctorWarnings] = useState(0);
   const [proctorEvents, setProctorEvents] = useState<ProctorEvent[]>([]);
   const [takeStartedAt, setTakeStartedAt] = useState<number | null>(null);
@@ -191,7 +268,50 @@ export default function QuizManager({
   }, [contextCode]);
 
   useEffect(() => {
+    if (!quiz || !authToken) return;
+    loadQuizHistory(sanitizeQuizId(quiz.title));
+  }, [quiz?.title, authToken]);
+
+  useEffect(() => {
+    onProctorLockChange?.(proctorActive);
+    return () => onProctorLockChange?.(false);
+  }, [proctorActive, onProctorLockChange]);
+
+  useEffect(() => {
+    return () => {
+      onProctorLockChange?.(false);
+      try {
+        if (document.fullscreenElement && (document as any).exitFullscreen) {
+          void (document as any).exitFullscreen();
+        }
+      } catch {}
+    };
+  }, [onProctorLockChange]);
+
+  useEffect(() => {
+    if (!proctorActive) return;
+    const onBeforeUnload = (ev: BeforeUnloadEvent) => {
+      ev.preventDefault();
+      ev.returnValue = "A proctored attempt is in progress.";
+      return ev.returnValue;
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [proctorActive]);
+
+  useEffect(() => {
+    if (mode !== "take" && proctorActive) {
+      void stopProctoredAttempt();
+    }
+  }, [mode, proctorActive]);
+
+  useEffect(() => {
     if (mode !== "take") return;
+    if (proctorEnabled && !proctorActive) {
+      setTimeElapsed(0);
+      setTakeStartedAt(null);
+      return;
+    }
 
     if (!takeStartedAt) {
       setTakeStartedAt(Date.now());
@@ -205,10 +325,10 @@ export default function QuizManager({
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [mode, takeStartedAt]);
+  }, [mode, takeStartedAt, proctorEnabled, proctorActive]);
 
   useEffect(() => {
-    if (mode !== "take" || !proctorEnabled) return;
+    if (mode !== "take" || !proctorActive) return;
 
     const pushEvent = (type: string, detail: string) => {
       setProctorEvents((prev) => [...prev, { type, detail, at: new Date().toISOString() }].slice(-50));
@@ -248,7 +368,7 @@ export default function QuizManager({
       document.removeEventListener("paste", onPaste);
       document.removeEventListener("contextmenu", onContextMenu);
     };
-  }, [mode, proctorEnabled]);
+  }, [mode, proctorActive]);
 
   const totalQuestions = useMemo(() => quiz?.questions.length ?? 0, [quiz]);
 
@@ -259,9 +379,15 @@ export default function QuizManager({
       questions: []
     });
     setAnswers({});
+    setAnswerFeedback({});
     setScore(null);
+    setScoreBreakdown(null);
+    setAttemptHistory([]);
     setMode("editor");
     setTakeStartedAt(null);
+    setTimeElapsed(0);
+    setProctorEnabled(false);
+    void stopProctoredAttempt();
   }
 
   function handleFileUpload(e: ChangeEvent<HTMLInputElement>) {
@@ -278,8 +404,13 @@ export default function QuizManager({
         setQuiz(normalizeQuiz(parsed));
         setMode("take");
         setAnswers({});
+        setAnswerFeedback({});
         setScore(null);
+        setScoreBreakdown(null);
         setTakeStartedAt(null);
+        setTimeElapsed(0);
+        setProctorEnabled(false);
+        void stopProctoredAttempt();
       } catch (err) {
         alert("Could not parse JSON: " + String(err));
       }
@@ -352,7 +483,231 @@ export default function QuizManager({
     updateQuestion({ ...question, level, points: pointsForLevel(level) } as Question);
   }
 
-  async function recordAttempt(scoreValue: number, weakAreas: string[]) {
+  async function startProctoredAttempt() {
+    if (mode !== "take") return;
+    setProctorWarnings(0);
+    setProctorEvents([]);
+    setTimeElapsed(0);
+    setTakeStartedAt(Date.now());
+    setProctorActive(true);
+
+    try {
+      const node = takeSectionRef.current as any;
+      if (node?.requestFullscreen && !document.fullscreenElement) {
+        await node.requestFullscreen();
+      }
+    } catch {
+      // Fullscreen may be blocked by browser policy; continue with app-level lock.
+    }
+  }
+
+  async function stopProctoredAttempt() {
+    setProctorActive(false);
+    try {
+      if (document.fullscreenElement && (document as any).exitFullscreen) {
+        await (document as any).exitFullscreen();
+      }
+    } catch {}
+  }
+
+  function resetForRetry() {
+    setAnswers({});
+    setAnswerFeedback({});
+    setScore(null);
+    setScoreBreakdown(null);
+    setMode("take");
+    setTakeStartedAt(null);
+    setTimeElapsed(0);
+    setProctorWarnings(0);
+    setProctorEvents([]);
+    void stopProctoredAttempt();
+  }
+
+  function exportQuizDefinition() {
+    if (!quiz) return;
+    const lines: string[] = [];
+    lines.push(quiz.title || "Quiz");
+    lines.push("=".repeat(Math.max(24, (quiz.title || "Quiz").length)));
+    if (quiz.description) {
+      lines.push(quiz.description);
+      lines.push("");
+    }
+    lines.push("Instructions:");
+    lines.push("- Attempt all questions.");
+    lines.push("- Write concise and clear answers.");
+    lines.push("");
+
+    quiz.questions.forEach((q, idx) => {
+      lines.push(`${idx + 1}. [${q.type.toUpperCase()} | ${q.level} | ${q.points} pts] ${q.q}`);
+      if (q.type === "mcq") {
+        q.options.forEach((opt, optIdx) => {
+          const label = String.fromCharCode(65 + optIdx);
+          lines.push(`   ${label}. ${opt}`);
+        });
+      } else if (q.type === "code" && q.starterCode) {
+        lines.push("   Starter code:");
+        lines.push("   ---");
+        String(q.starterCode).split("\n").forEach((line) => lines.push(`   ${line}`));
+        lines.push("   ---");
+      }
+      lines.push("");
+    });
+
+    lines.push("Answer Key (Instructor)");
+    lines.push("-----------------------");
+    quiz.questions.forEach((q, idx) => {
+      if (q.type === "mcq") {
+        const correctOpt = q.options[q.correctIndex] || "";
+        lines.push(`${idx + 1}. ${String.fromCharCode(65 + q.correctIndex)}. ${correctOpt}`);
+      } else if (q.type === "text") {
+        lines.push(`${idx + 1}. Expected keywords: ${(q.keywords || []).join(", ") || "N/A"}`);
+      } else {
+        lines.push(`${idx + 1}. Expected key points: ${(q.expectedKeyPoints || []).join(", ") || "N/A"}`);
+      }
+    });
+
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${sanitizeQuizId(quiz.title)}-quiz-sheet.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function buildQuizDocHtml() {
+    if (!quiz) return "";
+    const header = `
+      <h1>${escapeHtml(quiz.title || "Quiz")}</h1>
+      <p>${escapeHtml(quiz.description || "")}</p>
+      <hr />
+      <h2>Questions</h2>
+    `;
+    const body = quiz.questions.map((q, idx) => {
+      let details = "";
+      if (q.type === "mcq") {
+        details = `<ol type="A">${q.options.map((opt) => `<li>${escapeHtml(opt)}</li>`).join("")}</ol>`;
+      } else if (q.type === "text") {
+        details = `<p><em>Expected keywords:</em> ${escapeHtml((q.keywords || []).join(", ") || "N/A")}</p>`;
+      } else {
+        details = `
+          <pre>${escapeHtml(q.starterCode || "")}</pre>
+          <p><em>Expected key points:</em> ${escapeHtml((q.expectedKeyPoints || []).join(", ") || "N/A")}</p>
+        `;
+      }
+      return `
+        <section style="margin-bottom:16px;">
+          <h3>${idx + 1}. ${escapeHtml(q.q)} <small>(${q.type.toUpperCase()} | ${q.level} | ${q.points} pts)</small></h3>
+          ${details}
+        </section>
+      `;
+    }).join("");
+
+    const answerKey = `
+      <hr />
+      <h2>Answer Key (Instructor)</h2>
+      <ol>
+        ${quiz.questions.map((q) => {
+          if (q.type === "mcq") {
+            const letter = String.fromCharCode(65 + q.correctIndex);
+            return `<li>${letter}. ${escapeHtml(q.options[q.correctIndex] || "")}</li>`;
+          }
+          if (q.type === "text") {
+            return `<li>${escapeHtml((q.keywords || []).join(", ") || "N/A")}</li>`;
+          }
+          return `<li>${escapeHtml((q.expectedKeyPoints || []).join(", ") || "N/A")}</li>`;
+        }).join("")}
+      </ol>
+    `;
+
+    return `
+      <!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(quiz.title || "Quiz")}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+          h1, h2, h3 { margin: 0 0 8px; }
+          p { margin: 0 0 10px; line-height: 1.5; }
+          pre { background: #f5f5f5; border: 1px solid #ddd; padding: 10px; border-radius: 6px; white-space: pre-wrap; }
+          small { color: #555; font-weight: normal; }
+        </style>
+      </head>
+      <body>
+        ${header}
+        ${body}
+        ${answerKey}
+      </body>
+      </html>
+    `;
+  }
+
+  function exportQuizDoc() {
+    if (!quiz) return;
+    const html = buildQuizDocHtml();
+    const blob = new Blob([`\ufeff${html}`], { type: "application/msword" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${sanitizeQuizId(quiz.title)}-quiz-sheet.doc`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function buildAnswerPayload() {
+    const out: Record<string, number | string | null> = {};
+    Object.entries(answers).forEach(([id, value]) => {
+      out[id] = value?.value ?? null;
+    });
+    return out;
+  }
+
+  async function gradeDescriptiveWithAI(question: string, reference: string, answer: string) {
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/grade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, reference, answer })
+      });
+      if (!res.ok) return null;
+      const payload = await res.json();
+      const score = typeof payload?.score === "number" ? Math.max(0, Math.min(100, payload.score)) : null;
+      return {
+        score,
+        feedback: String(payload?.feedback || payload?.corrected_answer || "").trim(),
+        corrected: String(payload?.corrected_answer || reference || "").trim()
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadQuizHistory(currentQuizId?: string) {
+    if (!authToken) {
+      setAttemptHistory([]);
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const queryQuizId = currentQuizId || sanitizeQuizId(quiz?.title || "quiz");
+      const res = await fetch(`${apiBaseUrl}/api/quiz/history?quizId=${encodeURIComponent(queryQuizId)}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!res.ok) {
+        throw new Error(`history request failed (${res.status})`);
+      }
+      const payload = await res.json();
+      setAttemptHistory(Array.isArray(payload.attempts) ? payload.attempts : []);
+    } catch {
+      setAttemptHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function recordAttempt(scoreValue: number, weakAreas: string[], wasProctored = false) {
     if (!authToken || !quiz) return;
 
     const headers: Record<string, string> = {
@@ -370,14 +725,14 @@ export default function QuizManager({
         durationSec: timeElapsed,
         weakAreas,
         proctorSummary: {
-          enabled: proctorEnabled,
+          enabled: wasProctored,
           warnings: proctorWarnings,
           events: proctorEvents
         }
       })
     });
 
-    if (proctorEnabled && proctorEvents.length > 0) {
+    if (wasProctored && proctorEvents.length > 0) {
       const important = proctorEvents.slice(-10);
       for (const ev of important) {
         await fetch(`${apiBaseUrl}/api/proctor/event`, {
@@ -393,98 +748,201 @@ export default function QuizManager({
 
   async function grade() {
     if (!quiz) return;
+    const proctoredAttempt = proctorEnabled && proctorActive;
+    if (proctorEnabled && !proctorActive) {
+      alert("Click 'Start Proctored Attempt' before submitting.");
+      return;
+    }
     setGrading(true);
 
-    try {
-      let total = 0;
-      let earned = 0;
-      const nextAnswers = { ...answers };
-      const weakAreas = new Set<string>();
+    const quizId = sanitizeQuizId(quiz.title);
+    let total = 0;
+    let earned = 0;
+    const nextAnswers = { ...answers };
+    const weakAreas = new Set<string>();
+    const localFeedback: Record<string, CorrectAnswerFeedback> = {};
+    const descriptiveQuestions: Array<TextQ | CodeQ> = [];
 
-      quiz.questions.forEach((q) => {
-        const pts = Number(q.points || pointsForLevel(q.level));
-        total += pts;
-        const a = answers[q.id];
+    for (const q of quiz.questions) {
+      const pts = Number(q.points || pointsForLevel(q.level));
+      total += pts;
+      const a = answers[q.id];
 
-        if (q.type === "mcq") {
-          const selected = typeof a?.value === "number" ? a.value : null;
-          const correct = selected === q.correctIndex;
-          nextAnswers[q.id] = {
-            id: q.id,
-            type: q.type,
-            value: selected,
-            correct,
-            pointsAwarded: correct ? pts : 0
+      if (q.type === "mcq") {
+        const selected = typeof a?.value === "number" ? a.value : null;
+        const correct = selected === q.correctIndex;
+        nextAnswers[q.id] = {
+          id: q.id,
+          type: q.type,
+          value: selected,
+          correct,
+          pointsAwarded: correct ? pts : 0
+        };
+        localFeedback[q.id] = {
+          questionId: q.id,
+          correct: q.options[q.correctIndex] || "N/A",
+          explanation: "Review the correct option and concept.",
+          userAnswer: selected == null ? null : q.options[selected] || null,
+          isCorrect: Boolean(correct)
+        };
+        if (correct) earned += pts;
+        else weakAreas.add(`mcq-${q.level}`);
+        continue;
+      }
+
+      descriptiveQuestions.push(q);
+      if (q.type === "text") {
+        const answerText = String(a?.value || "").toLowerCase();
+        const keywords = q.keywords || [];
+        const matched = keywords.reduce((acc, kw) => acc + (answerText.includes(kw.toLowerCase()) ? 1 : 0), 0);
+        const fraction = keywords.length ? Math.min(1, matched / Math.max(1, keywords.length)) : 0;
+        const awarded = Math.round(fraction * pts);
+        nextAnswers[q.id] = {
+          id: q.id,
+          type: q.type,
+          value: a?.value ?? "",
+          correct: awarded === pts,
+          pointsAwarded: awarded
+        };
+        localFeedback[q.id] = {
+          questionId: q.id,
+          correct: keywords.join(", "),
+          explanation: "Checking with AI for a better correction...",
+          userAnswer: String(a?.value ?? ""),
+          isCorrect: awarded === pts
+        };
+        earned += awarded;
+        if (awarded < pts) weakAreas.add(`text-${q.level}`);
+        continue;
+      }
+
+      const codeAnswer = String(a?.value || "").toLowerCase();
+      const expected = (q.expectedKeyPoints || []).map((x) => x.toLowerCase());
+      const matched = expected.reduce((acc, keyPoint) => acc + (codeAnswer.includes(keyPoint) ? 1 : 0), 0);
+      const fraction = expected.length ? Math.min(1, matched / Math.max(1, expected.length)) : 0;
+      const awarded = Math.round(fraction * pts);
+      nextAnswers[q.id] = {
+        id: q.id,
+        type: q.type,
+        value: a?.value ?? "",
+        correct: awarded === pts,
+        pointsAwarded: awarded
+      };
+      localFeedback[q.id] = {
+        questionId: q.id,
+        correct: (q.expectedKeyPoints || []).join(", "),
+        explanation: "Checking with AI for a better correction...",
+        userAnswer: String(a?.value ?? ""),
+        isCorrect: awarded === pts
+      };
+      earned += awarded;
+      if (awarded < pts) weakAreas.add(`code-${q.level}`);
+    }
+
+    const scoreValue = total > 0 ? Math.round((earned / total) * 100) : 0;
+    setAnswers(nextAnswers);
+    setAnswerFeedback(localFeedback);
+    setScoreBreakdown({ score: earned, total, scorePercent: scoreValue });
+    setScore(scoreValue);
+    setMode("results");
+    await stopProctoredAttempt();
+    setGrading(false);
+
+    const enrichDescriptiveFeedback = async () => {
+      const updates = await Promise.all(
+        descriptiveQuestions.map(async (q) => {
+          const answerText = String(nextAnswers[q.id]?.value ?? "");
+          const reference = q.type === "text"
+            ? (q.keywords || []).join(", ")
+            : (q.expectedKeyPoints || []).join(", ");
+          const ai = await gradeDescriptiveWithAI(q.q, reference, answerText);
+          return { q, ai };
+        })
+      );
+
+      setAnswerFeedback((prev) => {
+        const next = { ...prev };
+        updates.forEach(({ q, ai }) => {
+          if (!ai) return;
+          const current = next[q.id] || {
+            questionId: q.id,
+            correct: "",
+            explanation: "",
+            userAnswer: String(nextAnswers[q.id]?.value ?? ""),
+            isCorrect: false
           };
-          if (correct) earned += pts;
-          else weakAreas.add(`mcq-${q.level}`);
-          return;
-        }
-
-        if (q.type === "text") {
-          const answerText = String(a?.value || "").toLowerCase();
-          const keywords = q.keywords || [];
-          if (!keywords.length) {
-            nextAnswers[q.id] = {
-              id: q.id,
-              type: q.type,
-              value: a?.value ?? "",
-              correct: null,
-              pointsAwarded: 0
-            };
-            weakAreas.add(`text-${q.level}`);
-          } else {
-            const matched = keywords.reduce((acc, kw) => acc + (answerText.includes(kw.toLowerCase()) ? 1 : 0), 0);
-            const fraction = Math.min(1, matched / Math.max(1, keywords.length));
-            const awarded = Math.round(fraction * pts);
-            nextAnswers[q.id] = {
-              id: q.id,
-              type: q.type,
-              value: a?.value ?? "",
-              correct: awarded === pts,
-              pointsAwarded: awarded
-            };
-            earned += awarded;
-            if (awarded < pts) weakAreas.add(`text-${q.level}`);
-          }
-          return;
-        }
-
-        const codeAnswer = String(a?.value || "").toLowerCase();
-        const expected = (q.expectedKeyPoints || []).map((x) => x.toLowerCase());
-        if (!expected.length) {
-          nextAnswers[q.id] = {
-            id: q.id,
-            type: q.type,
-            value: a?.value ?? "",
-            correct: null,
-            pointsAwarded: 0
+          next[q.id] = {
+            ...current,
+            correct: ai.corrected || current.correct,
+            explanation: ai.feedback || current.explanation
           };
-          weakAreas.add(`code-${q.level}`);
-        } else {
-          const matched = expected.reduce((acc, keyPoint) => acc + (codeAnswer.includes(keyPoint) ? 1 : 0), 0);
-          const fraction = Math.min(1, matched / Math.max(1, expected.length));
-          const awarded = Math.round(fraction * pts);
-          nextAnswers[q.id] = {
-            id: q.id,
-            type: q.type,
-            value: a?.value ?? "",
-            correct: awarded === pts,
-            pointsAwarded: awarded
-          };
-          earned += awarded;
-          if (awarded < pts) weakAreas.add(`code-${q.level}`);
-        }
+        });
+        return next;
       });
+    };
 
-      const scoreValue = total > 0 ? Math.round((earned / total) * 100) : 0;
-      setAnswers(nextAnswers);
-      setScore(scoreValue);
-      setMode("results");
+    let serverApplied = false;
+    if (authToken) {
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/quiz/submit`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            quizId,
+            quizTitle: quiz.title,
+            questions: quiz.questions,
+            answers: buildAnswerPayload(),
+            durationSec: timeElapsed,
+            proctorSummary: {
+              enabled: proctoredAttempt,
+              warnings: proctorWarnings,
+              events: proctorEvents
+            }
+          })
+        });
 
-      await recordAttempt(scoreValue, Array.from(weakAreas));
-    } finally {
-      setGrading(false);
+        if (res.ok) {
+          const payload = await res.json();
+          const feedbackArr = Array.isArray(payload.correctAnswers) ? payload.correctAnswers : [];
+          const feedbackMap: Record<string, CorrectAnswerFeedback> = {};
+          feedbackArr.forEach((item: CorrectAnswerFeedback) => {
+            feedbackMap[item.questionId] = item;
+          });
+          const mergedAnswers = { ...nextAnswers };
+          quiz.questions.forEach((q) => {
+            const fb = feedbackMap[q.id];
+            if (!fb) return;
+            mergedAnswers[q.id] = {
+              ...(mergedAnswers[q.id] || { id: q.id, type: q.type, value: null }),
+              correct: fb.isCorrect,
+              pointsAwarded: fb.isCorrect ? Number(q.points || 0) : 0
+            };
+          });
+          setAnswers(mergedAnswers);
+          setAnswerFeedback(feedbackMap);
+          setScoreBreakdown({
+            score: Number(payload.score || 0),
+            total: Number(payload.total || 0),
+            scorePercent: Number(payload.scorePercent || 0)
+          });
+          setScore(Number(payload.scorePercent || 0));
+          await loadQuizHistory(quizId);
+          if (onAttemptRecorded) onAttemptRecorded();
+          serverApplied = true;
+        }
+      } catch (err) {
+        console.warn("Server quiz submit failed. Using local grading.", err);
+      }
+    }
+
+    if (!serverApplied) {
+      if (authToken) {
+        await recordAttempt(scoreValue, Array.from(weakAreas), proctoredAttempt);
+      }
+      void enrichDescriptiveFeedback();
     }
   }
 
@@ -515,8 +973,14 @@ export default function QuizManager({
       setQuiz(generatedQuiz);
       setMode("take");
       setAnswers({});
+      setAnswerFeedback({});
       setScore(null);
+      setScoreBreakdown(null);
       setTakeStartedAt(null);
+      setTimeElapsed(0);
+      setProctorEnabled(false);
+      await stopProctoredAttempt();
+      await loadQuizHistory(sanitizeQuizId(generatedQuiz.title));
     } catch (err: any) {
       setGenerateError(err?.message || "Failed to generate quiz");
     } finally {
@@ -544,6 +1008,9 @@ export default function QuizManager({
     URL.revokeObjectURL(url);
   }
 
+  const actionLocked = mode === "take" && proctorActive;
+  const proctorPendingStart = mode === "take" && proctorEnabled && !proctorActive;
+
   return (
     <div className="quiz-manager">
       <div className="quiz-header">
@@ -555,18 +1022,16 @@ export default function QuizManager({
           <button
             onClick={() => {
               if (!quiz) return;
-              setAnswers({});
-              setScore(null);
-              setMode("take");
-              setTakeStartedAt(null);
+              resetForRetry();
             }}
             className="qm-btn"
-            disabled={!quiz}
+            disabled={!quiz || actionLocked}
           >
             Take Quiz
           </button>
           <button
             onClick={() => {
+              if (actionLocked) return;
               if (!quiz) {
                 createBlankQuiz();
                 return;
@@ -575,11 +1040,14 @@ export default function QuizManager({
             }}
             className="qm-btn"
             title="Manual question builder for instructors and custom quiz authors"
+            disabled={actionLocked}
           >
             Instructor Editor
           </button>
-          <button onClick={grade} className="qm-btn" disabled={grading || !quiz}>{grading ? "Grading..." : "Grade"}</button>
-          <button onClick={exportResults} style={{ marginLeft: 8 }} className="qm-btn ghost" disabled={!quiz}>Export</button>
+          <button onClick={resetForRetry} className="qm-btn" disabled={!quiz || actionLocked}>Retry Quiz</button>
+          <button onClick={exportResults} style={{ marginLeft: 8 }} className="qm-btn ghost" disabled={!quiz || actionLocked}>Export Results</button>
+          <button onClick={exportQuizDefinition} className="qm-btn ghost" disabled={!quiz || actionLocked}>Download Quiz Sheet</button>
+          <button onClick={exportQuizDoc} className="qm-btn ghost" disabled={!quiz || actionLocked}>Download DOC</button>
         </div>
       </div>
       <p className="quiz-capability-note">Instructor Editor is for personal/custom quizzes. Proctored mode is available in Take Quiz.</p>
@@ -687,6 +1155,8 @@ export default function QuizManager({
             <button onClick={() => addQuestion("mcq")} className="qm-btn small">Add MCQ</button>
             <button onClick={() => addQuestion("text")} className="qm-btn small">Add Text</button>
             <button onClick={() => addQuestion("code")} className="qm-btn small">Add Code</button>
+            <button onClick={exportQuizDefinition} className="qm-btn small ghost">Download Quiz Sheet</button>
+            <button onClick={exportQuizDoc} className="qm-btn small ghost">Download DOC</button>
           </div>
 
           <div className="question-list">
@@ -782,7 +1252,7 @@ export default function QuizManager({
       )}
 
       {mode === "take" && quiz && (
-        <section className="quiz-card">
+        <section className="quiz-card" ref={takeSectionRef as any}>
           <h4>{quiz.title}</h4>
           <p>{quiz.description}</p>
           {quiz.questions.length === 0 && (
@@ -794,13 +1264,21 @@ export default function QuizManager({
               <input
                 type="checkbox"
                 checked={proctorEnabled}
+                disabled={proctorActive}
                 onChange={(e) => setProctorEnabled(e.target.checked)}
               />
-              Proctored attempt mode
+              Enable proctored mode
             </label>
+            {proctorEnabled && !proctorActive && (
+              <button className="qm-btn small" onClick={startProctoredAttempt}>Start Proctored Attempt</button>
+            )}
+            {proctorActive && <strong>Proctored attempt active (locked)</strong>}
             <span>{`Time: ${formatDuration(timeElapsed)}`}</span>
             <span>{`Warnings: ${proctorWarnings}`}</span>
           </div>
+          {proctorPendingStart && (
+            <p className="generator-error">Click "Start Proctored Attempt" to begin. Quiz inputs stay locked until started.</p>
+          )}
 
           <div className="question-list">
             {quiz.questions.map((q) => (
@@ -819,6 +1297,7 @@ export default function QuizManager({
                           type="radio"
                           name={q.id}
                           checked={(answers[q.id]?.value as number | null) === idx}
+                          disabled={proctorPendingStart}
                           onChange={() => setAnswer(q.id, idx, "mcq")}
                         />
                         {opt}
@@ -831,6 +1310,7 @@ export default function QuizManager({
                   <textarea
                     rows={4}
                     value={(answers[q.id]?.value as string) || ""}
+                    disabled={proctorPendingStart}
                     onChange={(e) => setAnswer(q.id, e.target.value, "text")}
                   />
                 )}
@@ -842,6 +1322,7 @@ export default function QuizManager({
                       rows={7}
                       className="code-answer"
                       value={(answers[q.id]?.value as string) || ""}
+                      disabled={proctorPendingStart}
                       onChange={(e) => setAnswer(q.id, e.target.value, "code")}
                       placeholder="Write your code answer here"
                     />
@@ -851,7 +1332,9 @@ export default function QuizManager({
             ))}
           </div>
 
-          <button onClick={grade} className="qm-btn generate" disabled={grading}>{grading ? "Grading..." : "Submit and Grade"}</button>
+          <button onClick={grade} className="qm-btn generate" disabled={grading || proctorPendingStart}>
+            {grading ? "Grading..." : "Submit and Grade"}
+          </button>
         </section>
       )}
 
@@ -859,6 +1342,12 @@ export default function QuizManager({
         <section className="quiz-card">
           <h4>{`Results: ${quiz.title}`}</h4>
           <p className="score-pill">{`Score: ${score ?? 0}%`}</p>
+          {scoreBreakdown && (
+            <p>{`Points: ${scoreBreakdown.score}/${scoreBreakdown.total}`}</p>
+          )}
+          <div className="question-actions">
+            <button onClick={resetForRetry} className="qm-btn small">Retry Quiz</button>
+          </div>
 
           <div className="proctor-result">
             <strong>Proctor Summary</strong>
@@ -881,6 +1370,12 @@ export default function QuizManager({
                   </div>
                   <strong>{q.q}</strong>
                   <div>{`Your answer: ${answerDisplay}`}</div>
+                  {answerFeedback[q.id] && (
+                    <>
+                      <div>{`Correct answer: ${answerFeedback[q.id].correct}`}</div>
+                      <div>{`Explanation: ${answerFeedback[q.id].explanation}`}</div>
+                    </>
+                  )}
                   <div className={`result-line ${a?.correct === true ? "ok" : a?.correct === false ? "bad" : "pending"}`}>
                     {q.type === "mcq"
                       ? (a?.correct ? `Correct (${a?.pointsAwarded} pts)` : "Incorrect (0 pts)")
@@ -890,8 +1385,30 @@ export default function QuizManager({
               );
             })}
           </div>
+
+          <section className="quiz-card">
+            <h4>Previous Attempts</h4>
+            {historyLoading && <p>Loading attempt history...</p>}
+            {!historyLoading && attemptHistory.length === 0 && <p>No previous attempts for this quiz yet.</p>}
+            {!historyLoading && attemptHistory.length > 0 && (
+              <div className="plan-list">
+                {attemptHistory.map((attempt, idx) => {
+                  const prev = attemptHistory[idx + 1];
+                  const delta = prev ? attempt.scorePercent - prev.scorePercent : 0;
+                  return (
+                    <article key={`${attempt.quizId}-${attempt.attemptNumber}`}>
+                      <strong>{`Attempt #${attempt.attemptNumber} - ${attempt.scorePercent}%`}</strong>
+                      <p>{new Date(attempt.timestamp).toLocaleString()}</p>
+                      {idx < attemptHistory.length - 1 && <p>{`Improvement: ${delta >= 0 ? "+" : ""}${delta}%`}</p>}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         </section>
       )}
     </div>
   );
 }
+
