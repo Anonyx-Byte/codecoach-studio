@@ -116,7 +116,7 @@ type GoogleWindow = Window & typeof globalThis & {
   google?: any;
 };
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8080").replace(/\/$/, "");
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 const AUTH_TOKEN_KEY = "codecoach-auth-token";
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
 
