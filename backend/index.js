@@ -59,19 +59,41 @@ const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
-const allowedOrigins = String(process.env.CORS_ORIGIN || "")
+function normalizeOrigin(value) {
+  return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+const configuredOrigins = String(process.env.CORS_ORIGIN || "")
   .split(",")
   .map((x) => x.trim())
   .filter(Boolean);
 
+const defaultProdOrigins = [
+  "https://codecoach-studio.vercel.app",
+  "https://www.codecoach-studio.vercel.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173"
+];
+
+const allowedOrigins = new Set(
+  [
+    ...configuredOrigins,
+    ...(IS_PROD && configuredOrigins.length === 0 ? defaultProdOrigins : [])
+  ]
+    .map((x) => normalizeOrigin(x))
+    .filter(Boolean)
+);
+
+if (IS_PROD && configuredOrigins.length === 0) {
+  console.warn("CORS_ORIGIN is not set in production. Using default allowed origins for CodeCoach.");
+}
+
 app.use(cors({
   origin(origin, cb) {
     if (!origin) return cb(null, true);
-    if (!allowedOrigins.length) {
-      if (!IS_PROD) return cb(null, true);
-      return cb(new Error("CORS blocked: origin not allowed"));
-    }
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (!allowedOrigins.size && !IS_PROD) return cb(null, true);
+    const requestOrigin = normalizeOrigin(origin);
+    if (allowedOrigins.has(requestOrigin)) return cb(null, true);
     return cb(new Error("CORS blocked: origin not allowed"));
   }
 }));
