@@ -701,6 +701,18 @@
   flex-wrap: wrap;
 }
 
+.analytics-plan-btn {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-gold) 62%, #4b3208), color-mix(in srgb, var(--brand) 76%, #1a1738));
+  border-color: color-mix(in srgb, var(--accent-gold) 46%, var(--line-strong));
+  color: #fff;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-gold) 26%, transparent);
+}
+
+.analytics-plan-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-gold) 74%, #5a3a08), color-mix(in srgb, var(--brand) 84%, #201846));
+  transform: translateY(-1px);
+}
+
 .analytics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

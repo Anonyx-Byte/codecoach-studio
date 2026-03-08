@@ -820,13 +820,20 @@ function buildStudyPlanPrompt({ outputLanguage, analytics }) {
   const weakTopics = (analytics?.weakTopics || []).map((x) => x.topic);
   const recentAttempts = analytics?.recentAttempts || [];
   const completionRate = analytics?.completionRate ?? 0;
+  const avgScore = analytics?.avgScore ?? 0;
+  const improvementPercentage = analytics?.improvementPercentage ?? 0;
+  const topicAccuracy = analytics?.topicAccuracy || [];
   const recommendedPracticeMinutes = analytics?.recommendedPracticeMinutes ?? 45;
   return `
 Create a personalized weekly coding study plan in ${outputLanguage}.
 Use the student analytics to tailor weak-topic practice, revision reminders, and quiz suggestions.
+The plan MUST be specific and actionable, not vague.
 
 Student weak topics: ${JSON.stringify(weakTopics)}
 Recent quiz history: ${JSON.stringify(recentAttempts)}
+Topic accuracy: ${JSON.stringify(topicAccuracy)}
+Average score: ${avgScore}%
+Improvement percentage: ${improvementPercentage}%
 Completion rate: ${completionRate}%
 Recommended daily practice minutes: ${recommendedPracticeMinutes}
 
@@ -850,10 +857,159 @@ Return ONLY valid JSON with this exact shape:
 
 Rules:
 - Include exactly 7 day objects.
-- Keep tasks actionable and short.
+- Each day must include 3-5 concrete tasks with measurable outcomes (counts, minutes, quiz size).
+- Include at least one quiz-related task per day.
+- Include at least one revision/recall task per day.
 - Focus more on weak topics.
+- Reflect performance:
+  - if avg score < 60, increase fundamentals and guided practice,
+  - if avg score 60-80, mix practice + timed quizzes,
+  - if avg score > 80, prioritize advanced mixed quizzes and speed/accuracy.
+- Avoid generic phrases like "study concepts" without specifics.
 - Return JSON only. No markdown.
 `.trim();
+}
+
+function titleCaseTopic(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function uniqueList(values = [], limit = 8) {
+  return Array.from(new Set(values.map((x) => String(x || "").trim()).filter(Boolean))).slice(0, limit);
+}
+
+function pickWeakTopicsForPlan(analytics) {
+  const explicitWeak = Array.isArray(analytics?.weakTopics)
+    ? analytics.weakTopics.map((x) => titleCaseTopic(x.topic || x))
+    : [];
+  const lowAccuracy = Array.isArray(analytics?.topicAccuracy)
+    ? analytics.topicAccuracy
+      .slice()
+      .sort((a, b) => Number(a.accuracy || 0) - Number(b.accuracy || 0))
+      .slice(0, 5)
+      .map((x) => titleCaseTopic(x.topic))
+    : [];
+  return uniqueList([...explicitWeak, ...lowAccuracy, "Problem Solving", "Debugging"], 6);
+}
+
+function buildPerformanceFallbackStudyPlan({ outputLanguage, analytics }) {
+  const week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const weakTopics = pickWeakTopicsForPlan(analytics);
+  const avgScore = Number(analytics?.avgScore || 0);
+  const completionRate = Number(analytics?.completionRate || 0);
+  const recentAttempts = Array.isArray(analytics?.recentAttempts) ? analytics.recentAttempts : [];
+  const recommendedPracticeMinutes = clampNumber(analytics?.recommendedPracticeMinutes, 20, 180, 50);
+
+  const baseQuizCount = avgScore < 60 ? 8 : avgScore < 80 ? 10 : 12;
+  const drillCount = avgScore < 60 ? 12 : avgScore < 80 ? 10 : 8;
+  const defaultTopic = weakTopics[0] || "Core Concepts";
+
+  const days = week.map((day, idx) => {
+    const primary = weakTopics[idx % Math.max(1, weakTopics.length)] || defaultTopic;
+    const secondary = weakTopics[(idx + 1) % Math.max(1, weakTopics.length)] || "Problem Solving";
+    const timedQuiz = baseQuizCount + (idx % 3);
+    const practiceMinutes = clampNumber(
+      recommendedPracticeMinutes + (idx === 5 || idx === 6 ? 10 : 0),
+      20,
+      180,
+      recommendedPracticeMinutes
+    );
+
+    const tasks = [
+      `Review ${primary} for 20 minutes and write 5 key bullet notes.`,
+      `Solve ${drillCount} targeted problems on ${primary} and ${secondary}.`,
+      `Take a timed ${timedQuiz}-question quiz on ${primary} and record mistakes.`,
+      `Create 4 flashcards from today's errors and revise them before ending.`
+    ];
+
+    if (completionRate < 60) {
+      tasks.push("Use Pomodoro: 3 x 25-minute focused blocks and log completion.");
+    } else if (avgScore > 80) {
+      tasks.push(`Do one mixed-difficulty challenge combining ${primary} + ${secondary}.`);
+    }
+
+    return {
+      day,
+      topics: uniqueList([primary, secondary], 4),
+      tasks,
+      practiceMinutes
+    };
+  });
+
+  const quizSuggestions = uniqueList([
+    ...weakTopics.slice(0, 4).map((topic) => `Take a 15-question focused quiz on ${topic}.`),
+    "Take one mixed mock quiz (20 questions) on Day 7."
+  ], 8);
+
+  const revisionReminders = uniqueList([
+    "Review wrong answers from the last two quizzes every evening.",
+    "Re-attempt at least 5 previously missed questions on alternate days.",
+    "Spend 10 minutes recalling concepts without notes before practice."
+  ], 8);
+
+  const tips = uniqueList([
+    avgScore < 60
+      ? "Prioritize correctness first, speed second. Use simpler examples before harder ones."
+      : "Track both speed and accuracy; reduce repeated mistakes daily.",
+    "Update your weak-topic list after each quiz and adjust next-day focus.",
+    "End each day with a short recap of top 3 learnings and 2 errors to avoid."
+  ], 8);
+
+  return {
+    title: outputLanguage && String(outputLanguage).toLowerCase() !== "english"
+      ? `Weekly Study Plan (${outputLanguage})`
+      : "Weekly Study Plan",
+    recommendedPracticeMinutes,
+    weakTopics,
+    quizSuggestions,
+    revisionReminders,
+    days,
+    tips
+  };
+}
+
+function isTaskVague(task) {
+  const text = String(task || "").trim().toLowerCase();
+  if (!text) return true;
+  if (text.length < 24) return true;
+  const genericPatterns = [
+    "study concepts",
+    "practice coding",
+    "revise concepts",
+    "learn more",
+    "do practice",
+    "work on weak topics"
+  ];
+  return genericPatterns.some((p) => text.includes(p));
+}
+
+function mergeStudyPlans(aiPlan, fallbackPlan) {
+  const aiDays = Array.isArray(aiPlan?.days) ? aiPlan.days : [];
+  const fbDays = Array.isArray(fallbackPlan?.days) ? fallbackPlan.days : [];
+  const mergedDays = [];
+
+  for (let i = 0; i < 7; i += 1) {
+    const candidate = aiDays[i];
+    const fb = fbDays[i] || {};
+    const aiTasks = Array.isArray(candidate?.tasks) ? candidate.tasks.filter(Boolean) : [];
+    const aiTopics = Array.isArray(candidate?.topics) ? candidate.topics.filter(Boolean) : [];
+    const aiStrong = aiTasks.length >= 3 && aiTopics.length >= 1 && aiTasks.filter((t) => !isTaskVague(t)).length >= 2;
+    mergedDays.push(aiStrong ? candidate : fb);
+  }
+
+  return {
+    ...fallbackPlan,
+    ...aiPlan,
+    weakTopics: uniqueList((aiPlan?.weakTopics || []).length ? aiPlan.weakTopics : fallbackPlan.weakTopics, 8),
+    quizSuggestions: uniqueList([...(aiPlan?.quizSuggestions || []), ...(fallbackPlan?.quizSuggestions || [])], 8),
+    revisionReminders: uniqueList([...(aiPlan?.revisionReminders || []), ...(fallbackPlan?.revisionReminders || [])], 8),
+    tips: uniqueList([...(aiPlan?.tips || []), ...(fallbackPlan?.tips || [])], 8),
+    days: mergedDays
+  };
 }
 
 function normalizeStudyPlan(planRaw, analytics) {
@@ -896,6 +1052,24 @@ function normalizeStudyPlan(planRaw, analytics) {
     });
   }
 
+  const enrichedDays = normalizedDays.map((d, idx) => {
+    const topics = Array.isArray(d.topics) && d.topics.length ? d.topics : (fallbackWeakTopics.length ? fallbackWeakTopics.slice(0, 2) : ["Core Revision", "Problem Solving"]);
+    const tasks = Array.isArray(d.tasks) && d.tasks.length
+      ? d.tasks
+      : [
+          `Review ${topics[0] || "Core concepts"} for 20 minutes and write summary notes.`,
+          `Solve 8 targeted problems on ${topics.join(" and ")}.`,
+          `Take a timed 10-question quiz on ${topics[0] || "current topic"} and log mistakes.`,
+          "Revise mistakes with 4 flashcards before ending the session."
+        ];
+    return {
+      day: d.day,
+      topics,
+      tasks,
+      practiceMinutes: d.practiceMinutes
+    };
+  });
+
   return {
     title: sanitizeText(src.title || "Weekly Study Plan", 100, "title"),
     recommendedPracticeMinutes,
@@ -908,7 +1082,7 @@ function normalizeStudyPlan(planRaw, analytics) {
     revisionReminders: Array.isArray(src.revisionReminders)
       ? src.revisionReminders.map((x) => sanitizeText(x || "", 140, "revisionReminder")).filter(Boolean).slice(0, 8)
       : [],
-    days: normalizedDays,
+    days: enrichedDays,
     tips: Array.isArray(src.tips)
       ? src.tips.map((x) => sanitizeText(x || "", 140, "tip")).filter(Boolean).slice(0, 8)
       : []
@@ -2360,7 +2534,10 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
     });
 
     const parsed = tryExtractJson(out);
-    const plan = normalizeStudyPlan(parsed || {}, analytics);
+    const fallbackPlan = buildPerformanceFallbackStudyPlan({ outputLanguage, analytics });
+    const aiPlan = normalizeStudyPlan(parsed || {}, analytics);
+    const merged = mergeStudyPlans(aiPlan, fallbackPlan);
+    const plan = normalizeStudyPlan(merged, analytics);
     return res.json({ ok: true, plan });
   } catch (err) {
     return sendError(res, 500, "UPSTREAM_AI_ERROR", "Failed to generate study plan", String(err.message || err));

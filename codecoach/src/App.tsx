@@ -1184,7 +1184,7 @@ export default function App() {
         <div className="analytics-panel">
           <div className="analytics-actions">
             <button className="btn-tertiary" onClick={loadAnalytics} disabled={analyticsLoading}>{analyticsLoading ? "Refreshing..." : "Refresh"}</button>
-            <button className="btn-secondary" onClick={generateStudyPlan} disabled={!authToken || planLoading}>{planLoading ? "Generating..." : "Generate 7-Day Study Plan"}</button>
+            <button className="btn-secondary analytics-plan-btn" onClick={generateStudyPlan} disabled={!authToken || planLoading}>{planLoading ? "Generating..." : "Generate 7-Day Study Plan"}</button>
           </div>
 
           {analyticsError && <div className="auth-error">{analyticsError}</div>}
