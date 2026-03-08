@@ -115,7 +115,7 @@ type MentorContentChunk =
 type GoogleWindow = Window & typeof globalThis & {
   google?: any;
 };
-const API_BASE_URL = "/api";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://codecoach-backend-env.eba-bmvw6qgm.us-east-1.elasticbeanstalk.com";
 
 const AUTH_TOKEN_KEY = "codecoach-auth-token";
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
