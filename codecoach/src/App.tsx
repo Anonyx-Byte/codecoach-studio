@@ -368,9 +368,11 @@ export default function App() {
             gemma: gemmaConfigured
           });
         }
-      } catch {
+      } catch (err){
         if (active) {
-          setBackendHealth("online");
+          console.error("Health check failed:",err);
+          setBackendHealth("offline");
+          setProviderReady({groq: false, gemma: false});
        
         }
       }
