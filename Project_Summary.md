@@ -156,7 +156,7 @@ DynamoDB allows the system to scale without complex database management.
 
 ---
 
-## Amazon ElastiCache (Redis)
+## Amazon ElastiCache (Valkey)
 
 Redis is used for:
 
@@ -168,20 +168,6 @@ This reduces repeated AI requests and improves response times.
 ---
 
 # ☁️ Additional AWS Services
-
-### Amazon S3
-Planned for:
-
-- Static asset storage
-- Quiz exports
-- Backup storage
-
-### Amazon CloudWatch
-Planned for:
-
-- Monitoring
-- Logs
-- Performance tracking
 
 ### AWS Lambda (Planned)
 
@@ -238,7 +224,6 @@ Without AI, this level of interactive tutoring would require significant instruc
 
 - Deploy global CDN using **CloudFront**
 - Improve caching strategy for faster responses
-- Add enhanced voice explanations using **Amazon Polly**
 
 ---
 
@@ -246,7 +231,7 @@ Without AI, this level of interactive tutoring would require significant instruc
 
 - Instructor dashboards with class analytics
 - Collaborative coding sessions
-- Mobile support
+- Leaderboard feature to compete with other peers or users.
 
 ---
 
