@@ -2,6 +2,7 @@
 const path = require("path");
 const crypto = require("crypto"); 
 const util = require("util");
+const http = require("http");
 const dotenv = require("dotenv");
 const bcrypt = require("bcrypt");
 
@@ -15,11 +16,17 @@ const cors = require("cors");
 const compression = require("compression");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const { Server } = require("socket.io");
 
 const { GetCommand, QueryCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
 const { DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
 const { callModel } = require("./callModel");
 const { AIService } = require("./aiService");
+const { buildAdaptivePrompt } = require("./src/llm/adaptiveHint");
+const { startKeepAlive } = require("./src/graph/keepAlive");
+const { setupArenaSocket } = require("./src/arena/arenaSocket");
+const graphRoutes = require("./src/routes/graph");
+const arenaRoutes = require("./src/routes/arena");
 const {
   initDynamo,
   ensureTablesIfNeeded,
@@ -56,6 +63,10 @@ let redisClient = null;
 let redisUnavailableWarned = false;
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] }
+});
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
@@ -104,6 +115,11 @@ const limiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false
+});
+const graphLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: "Too many requests" }
 });
 app.use(limiter);
 app.use(bodyParser.json({ limit: "800kb" }));
@@ -2382,6 +2398,46 @@ app.post("/api/ask", aiLimiter, async (req, res) => {
   }
 });
 
+app.post("/api/llm/hint", aiLimiter, async (req, res) => {
+  const { studentId, code, problemId } = req.body || {};
+  if (!studentId) {
+    return res.status(400).json({ error: "studentId required" });
+  }
+
+  try {
+    const safeProblemId = sanitizeText(problemId || "current problem", 200, "problemId");
+    const safeCode = sanitizeText(code || "not provided yet", 50000, "code");
+    const { fullPrompt, hint_style, weak_concepts } = await buildAdaptivePrompt(
+      String(studentId),
+      `Help with this problem: ${safeProblemId}\nMy current code: ${safeCode}`
+    );
+
+    const ai = await aiService.generateText({
+      prompt: fullPrompt,
+      provider: "auto",
+      reviewType: "quick",
+      maxTokens: 220,
+      temperature: 0.3,
+      timeoutMs: 25000,
+      fallback: true
+    });
+
+    return res.json({
+      hint: ai.text,
+      hint_style,
+      weak_concepts,
+      adaptive: true
+    });
+  } catch (err) {
+    console.error("[hint route] error:", err.message);
+    return res.json({
+      hint: "Try breaking the problem into smaller steps.",
+      hint_style: "intermediate",
+      adaptive: false
+    });
+  }
+});
+
 app.post("/api/run", runLimiter, async (req, res) => {
   try {
     const language = sanitizeText(req.body?.language || "javascript", 20, "language").toLowerCase();
@@ -2566,6 +2622,12 @@ app.post("/api/study-plan", authMiddleware, async (req, res) => {
   }
 });
 
+app.use("/api/graph", graphLimiter);
+app.use("/api/graph", graphRoutes);
+app.use("/api/arena", arenaRoutes);
+setupArenaSocket(io);
+startKeepAlive();
+
 async function startup() {
   try {
     if (!process.env.AWS_REGION) {
@@ -2584,7 +2646,7 @@ async function startup() {
       console.error("Service init error:", e.message);
     }
 
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log("Server running on port", PORT);
       console.log("Environment:", process.env.NODE_ENV || "development");
       console.log("Service status:");
