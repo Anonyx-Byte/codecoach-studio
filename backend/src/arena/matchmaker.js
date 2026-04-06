@@ -38,14 +38,28 @@ function parseEmbedding(value) {
 function extractCandidates(data) {
   if (!data) return [];
 
+  // Primary: TigerGraph arenaMatchmaking returns results[0].Result[]
+  const tgResult = data?.results?.[0]?.Result;
+  if (Array.isArray(tgResult) && tgResult.length > 0) {
+    return tgResult.map((item) => ({
+      _isTG: true,
+      id: item?.v_id || item?.attributes?.student_id || item?.attributes?.id,
+      name: item?.attributes?.name,
+      skill_level: item?.attributes?.skill_level,
+      weaknessScore: item?.attributes?.["@weakness_score"],
+      shared_weak_concepts: item?.attributes?.["@shared_weak_concepts"] || [],
+      embedding: item?.attributes?.embedding || item?.attributes?.vector
+    }));
+  }
+
+  // Fallback: legacy flat structures
   if (Array.isArray(data.results)) {
-    const nested = data.results.flatMap((item) => {
+    return data.results.flatMap((item) => {
       if (Array.isArray(item?.candidates)) return item.candidates;
       if (Array.isArray(item?.matches)) return item.matches;
       if (Array.isArray(item?.recommended_matches)) return item.recommended_matches;
       return item && typeof item === "object" ? [item] : [];
     });
-    return nested;
   }
 
   if (Array.isArray(data.candidates)) return data.candidates;
@@ -88,6 +102,7 @@ function normalizeCandidate(candidate) {
 async function findArenaMatch(studentId, studentEmbedding) {
   const demoStudent = DEMO_STUDENTS.find((student) => student.id === studentId);
   const queryResult = await runQuery("arenaMatchmaking", { target_student: studentId });
+  console.log("[Arena] TG candidates:", JSON.stringify(queryResult?.results?.[0]));
   const candidates = extractCandidates(queryResult)
     .map(normalizeCandidate)
     .filter(Boolean)

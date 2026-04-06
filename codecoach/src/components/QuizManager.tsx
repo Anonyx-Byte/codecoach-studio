@@ -235,7 +235,7 @@ export default function QuizManager({
 }: QuizManagerProps) {
   const takeSectionRef = useRef<HTMLElement | null>(null);
   const [quiz, setQuiz] = useState<Quiz | null>(() => buildStarterQuiz(contextCode));
-  const [mode, setMode] = useState<"editor" | "take" | "results">("take");
+  const [mode, setMode] = useState<"editor" | "pre-take" | "take" | "results">("pre-take");
   const [answers, setAnswers] = useState<Record<string, Answer>>({});
   const [score, setScore] = useState<number | null>(null);
   const [scoreBreakdown, setScoreBreakdown] = useState<{ score: number; total: number; scorePercent: number } | null>(null);
@@ -515,12 +515,21 @@ export default function QuizManager({
     setAnswerFeedback({});
     setScore(null);
     setScoreBreakdown(null);
-    setMode("take");
+    setMode("pre-take");
     setTakeStartedAt(null);
     setTimeElapsed(0);
     setProctorWarnings(0);
     setProctorEvents([]);
     void stopProctoredAttempt();
+  }
+
+  function beginQuiz() {
+    setMode("take");
+    setTakeStartedAt(Date.now());
+    setTimeElapsed(0);
+    if (proctorEnabled) {
+      void startProctoredAttempt();
+    }
   }
 
   function exportQuizDefinition() {
@@ -1009,7 +1018,7 @@ export default function QuizManager({
   }
 
   const actionLocked = mode === "take" && proctorActive;
-  const proctorPendingStart = mode === "take" && proctorEnabled && !proctorActive;
+  const proctorPendingStart = false; // No longer needed — proctor starts via beginQuiz()
 
   return (
     <div className="quiz-manager">
@@ -1029,6 +1038,7 @@ export default function QuizManager({
           >
             Take Quiz
           </button>
+
           <button
             onClick={() => {
               if (actionLocked) return;
@@ -1251,34 +1261,78 @@ export default function QuizManager({
         </section>
       )}
 
+      {/* ── Pre-Take: Choose mode before starting ── */}
+      {mode === "pre-take" && quiz && (
+        <section className="quiz-card" style={{ textAlign: "center", padding: "32px 24px" }}>
+          <h4 style={{ fontSize: "1.15rem", marginBottom: "6px" }}>{quiz.title}</h4>
+          <p style={{ color: "#94a3b8", marginBottom: "24px" }}>{quiz.description || `${quiz.questions.length} questions`}</p>
+
+          <div style={{
+            display: "flex", flexDirection: "column", gap: "14px",
+            maxWidth: "340px", margin: "0 auto 24px",
+          }}>
+            <div style={{
+              padding: "16px 20px", borderRadius: "14px",
+              background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.14)",
+              textAlign: "left",
+            }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={proctorEnabled}
+                  onChange={(e) => setProctorEnabled(e.target.checked)}
+                  style={{ width: "18px", height: "18px", accentColor: "#6366f1" }}
+                />
+                <div>
+                  <div style={{ fontWeight: 700, color: "#f1f5f9", fontSize: "0.92rem" }}>Proctored Mode</div>
+                  <div style={{ fontSize: "0.78rem", color: "#64748b", marginTop: "2px" }}>
+                    Fullscreen lock, tab-switch warnings, timed
+                  </div>
+                </div>
+              </label>
+            </div>
+
+            <div style={{
+              padding: "14px 20px", borderRadius: "14px",
+              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}>
+              <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>Questions</span>
+              <strong style={{ color: "#f1f5f9" }}>{quiz.questions.length}</strong>
+            </div>
+
+            <div style={{
+              padding: "14px 20px", borderRadius: "14px",
+              background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}>
+              <span style={{ color: "#94a3b8", fontSize: "0.85rem" }}>Total points</span>
+              <strong style={{ color: "#f1f5f9" }}>{quiz.questions.reduce((s, q) => s + (q.points || 1), 0)}</strong>
+            </div>
+          </div>
+
+          <button
+            onClick={beginQuiz}
+            disabled={quiz.questions.length === 0}
+            className="qm-btn generate"
+            style={{ fontSize: "1rem", padding: "14px 36px" }}
+          >
+            Begin Quiz
+          </button>
+        </section>
+      )}
+
+      {/* ── Take Quiz ── */}
       {mode === "take" && quiz && (
         <section className="quiz-card" ref={takeSectionRef as any}>
-          <h4>{quiz.title}</h4>
-          <p>{quiz.description}</p>
-          {quiz.questions.length === 0 && (
-            <p>No questions in this quiz yet. Open Instructor Editor to add questions.</p>
-          )}
-
-          <div className="proctor-bar">
-            <label>
-              <input
-                type="checkbox"
-                checked={proctorEnabled}
-                disabled={proctorActive}
-                onChange={(e) => setProctorEnabled(e.target.checked)}
-              />
-              Enable proctored mode
-            </label>
-            {proctorEnabled && !proctorActive && (
-              <button className="qm-btn small" onClick={startProctoredAttempt}>Start Proctored Attempt</button>
-            )}
-            {proctorActive && <strong>Proctored attempt active (locked)</strong>}
-            <span>{`Time: ${formatDuration(timeElapsed)}`}</span>
-            <span>{`Warnings: ${proctorWarnings}`}</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px" }}>
+            <h4 style={{ margin: 0 }}>{quiz.title}</h4>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", fontSize: "0.85rem" }}>
+              {proctorActive && <span style={{ color: "#f87171", fontWeight: 700 }}>PROCTORED</span>}
+              <span style={{ color: "#94a3b8", fontFamily: "monospace", fontWeight: 700 }}>{formatDuration(timeElapsed)}</span>
+              {proctorActive && <span style={{ color: "#64748b" }}>{`${proctorWarnings} warnings`}</span>}
+            </div>
           </div>
-          {proctorPendingStart && (
-            <p className="generator-error">Click "Start Proctored Attempt" to begin. Quiz inputs stay locked until started.</p>
-          )}
 
           <div className="question-list">
             {quiz.questions.map((q) => (
@@ -1349,11 +1403,13 @@ export default function QuizManager({
             <button onClick={resetForRetry} className="qm-btn small">Retry Quiz</button>
           </div>
 
-          <div className="proctor-result">
-            <strong>Proctor Summary</strong>
-            <span>{proctorEnabled ? "Enabled" : "Disabled"}</span>
-            <span>{`Warnings: ${proctorWarnings}`}</span>
-          </div>
+          {proctorEnabled && (
+            <div className="proctor-result">
+              <strong>Proctor Summary</strong>
+              <span>{proctorEnabled ? "Enabled" : "Disabled"}</span>
+              <span>{`Warnings: ${proctorWarnings}`}</span>
+            </div>
+          )}
 
           <div className="question-list">
             {quiz.questions.map((q) => {
@@ -1371,15 +1427,28 @@ export default function QuizManager({
                   <strong>{q.q}</strong>
                   <div>{`Your answer: ${answerDisplay}`}</div>
                   {answerFeedback[q.id] && (
-                    <>
-                      <div>{`Correct answer: ${answerFeedback[q.id].correct}`}</div>
-                      <div>{`Explanation: ${answerFeedback[q.id].explanation}`}</div>
-                    </>
+                    <div style={{ marginTop: "8px", padding: "10px 12px", borderRadius: "10px", background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.12)" }}>
+                      {answerFeedback[q.id].correct && (
+                        <div style={{ fontSize: "0.85rem", marginBottom: "4px" }}>
+                          <strong style={{ color: "#4ade80" }}>Correct answer:</strong>{" "}
+                          <span style={{ color: "#cbd5e1" }}>{answerFeedback[q.id].correct}</span>
+                        </div>
+                      )}
+                      {answerFeedback[q.id].explanation && answerFeedback[q.id].explanation !== "Checking with AI for a better correction..." && (
+                        <div style={{ fontSize: "0.85rem", color: "#94a3b8", lineHeight: 1.5 }}>
+                          {answerFeedback[q.id].explanation}
+                        </div>
+                      )}
+                    </div>
                   )}
                   <div className={`result-line ${a?.correct === true ? "ok" : a?.correct === false ? "bad" : "pending"}`}>
-                    {q.type === "mcq"
-                      ? (a?.correct ? `Correct (${a?.pointsAwarded} pts)` : "Incorrect (0 pts)")
-                      : (a?.pointsAwarded && a.pointsAwarded > 0 ? `Auto-graded ${a.pointsAwarded} pts` : "Needs manual/AI grading")}
+                    {a?.correct === true
+                      ? `Correct (${a?.pointsAwarded || q.points} pts)`
+                      : a?.correct === false
+                        ? `Incorrect (${a?.pointsAwarded || 0} pts)`
+                        : a?.pointsAwarded && a.pointsAwarded > 0
+                          ? `Partial credit: ${a.pointsAwarded} pts`
+                          : "Grading..."}
                   </div>
                 </article>
               );

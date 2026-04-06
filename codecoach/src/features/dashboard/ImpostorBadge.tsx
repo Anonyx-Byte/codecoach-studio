@@ -52,12 +52,13 @@ export default function ImpostorBadge() {
         gap: "12px",
         padding: "12px 16px",
         borderRadius: "14px",
-        background: "#fef3c7",
-        color: "#92400e",
-        border: "1px solid #f59e0b"
+        background: "rgba(245, 158, 11, 0.1)",
+        color: "#fcd34d",
+        border: "1px solid rgba(245, 158, 11, 0.3)",
+        boxShadow: "0 12px 30px rgba(0, 0, 0, 0.18)"
       }}
     >
-      <span>⚠️ Strong scores, shaky foundations detected</span>
+      <span>Strong scores, shaky foundations detected</span>
       <button
         type="button"
         onClick={() => setDismissed(true)}

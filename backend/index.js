@@ -23,8 +23,10 @@ const { DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
 const { callModel } = require("./callModel");
 const { AIService } = require("./aiService");
 const { buildAdaptivePrompt } = require("./src/llm/adaptiveHint");
-const { startKeepAlive } = require("./src/graph/keepAlive");
+const { graphAgentAsk } = require("./src/llm/graphAgent");
+const { startKeepAlive, triggerWakeOnDemand } = require("./src/graph/keepAlive");
 const { setupArenaSocket } = require("./src/arena/arenaSocket");
+const { getToken: getTigerGraphToken } = require("./src/graph/tigergraphClient");
 const graphRoutes = require("./src/routes/graph");
 const arenaRoutes = require("./src/routes/arena");
 const {
@@ -321,6 +323,7 @@ function sanitizeUser(user) {
     email: user.email,
     createdAt: user.createdAt,
     profile: user.profile || {},
+    studentId: user.studentId || null,
     analyticsMeta: {
       attemptsCount: Number(analyticsSummary.attemptsCount || 0),
       questionsAsked: Number(analyticsSummary.questionsAsked || 0),
@@ -652,6 +655,42 @@ function buildDetailedAnalytics(analytics) {
   };
 }
 
+async function updateWeakInEdge(userId, conceptId, scorePercent) {
+  const tgHost = process.env.TG_HOST;
+  const tgGraph = process.env.TG_GRAPH || "LearningGraph";
+  if (!tgHost) return;
+
+  const token = await getTigerGraphToken();
+  if (!token) return;
+
+  const errorFrequency = Math.round(100 - scorePercent);
+  const body = {
+    vertices: {},
+    edges: {
+      Student: {
+        [userId]: {
+          weak_in: {
+            Concept: {
+              [conceptId]: {
+                error_frequency: { value: errorFrequency, op: "max" }
+              }
+            }
+          }
+        }
+      }
+    }
+  };
+
+  const resp = await fetch(`${tgHost}/restpp/graph/${tgGraph}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!resp.ok) {
+    console.warn("[quiz/submit] TigerGraph edge update returned", resp.status);
+  }
+}
+
 async function syncUserBadges(userId, badges = []) {
   const unique = Array.from(new Set((badges || []).map((b) => String(b || "").trim()).filter(Boolean)));
   for (const badgeId of unique) {
@@ -852,6 +891,32 @@ ${code || ""}
 Student question:
 ${question}
 `.trim();
+}
+
+async function recordAskUsage(authHeader) {
+  if (!authHeader?.startsWith("Bearer ")) return;
+
+  const payload = verifyToken(authHeader.slice(7));
+  if (!payload?.uid) return;
+
+  const user = await getUserById(payload.uid);
+  if (!user) return;
+
+  const summary = user.analyticsSummary || {};
+  const questionsAsked = Number(summary.questionsAsked || 0) + 1;
+  const attemptsCount = Number(summary.attemptsCount || 0);
+  const syntheticAttempts = Array.from({ length: attemptsCount }, () => ({ score: 0 }));
+  const badges = computeBadges({ attempts: syntheticAttempts, questionsAsked });
+
+  await updateUser(
+    { userId: payload.uid },
+    "SET analyticsSummary.questionsAsked = :questionsAsked, analyticsSummary.badges = :badges, analyticsSummary.attemptsCount = if_not_exists(analyticsSummary.attemptsCount, :zero)",
+    {
+      ":questionsAsked": questionsAsked,
+      ":badges": badges,
+      ":zero": attemptsCount
+    }
+  );
 }
 
 function buildStudyPlanPrompt({ outputLanguage, analytics }) {
@@ -1542,6 +1607,7 @@ app.use((req, res, next) => {
 
 app.get("/", (_req, res) => res.send("CodeCoach backend running"));
 app.get("/api/health", async (_req, res) => {
+  triggerWakeOnDemand().catch(() => {});
   const memory = process.memoryUsage();
   const toMb = (n) => `${Math.round((Number(n || 0) / 1024 / 1024) * 100) / 100} MB`;
 
@@ -1598,6 +1664,7 @@ app.get("/api/health", async (_req, res) => {
 });
 
 app.get("/api/status", (_req, res) => {
+  triggerWakeOnDemand().catch(() => {});
   try {
     return res.json({
       ok: true,
@@ -1742,6 +1809,23 @@ app.post("/api/auth/google", authLimiter, async (req, res) => {
         { "#name": "name" }
       );
       resolvedUser = { ...resolvedUser, authProvider: "google", providerUserId: googleSub, name: resolvedUser.name || name };
+    }
+
+    // Demo account mapping — always maps to a fixed studentId in TigerGraph
+    const DEMO_EMAIL = String(process.env.DEMO_STUDENT_EMAIL || "").trim().toLowerCase();
+    const DEMO_ID    = String(process.env.DEMO_STUDENT_ID || "s001").trim();
+    if (DEMO_EMAIL && resolvedUser.email === DEMO_EMAIL) {
+      if (!resolvedUser.studentId) {
+        try {
+          await updateUser(
+            { userId: userIdOf(resolvedUser) },
+            "SET studentId = :sid",
+            { ":sid": DEMO_ID },
+            {}
+          );
+        } catch (_) { /* non-fatal */ }
+      }
+      resolvedUser = { ...resolvedUser, studentId: DEMO_ID };
     }
 
     const token = createToken({ uid: userIdOf(resolvedUser), exp: Date.now() + TOKEN_TTL_MS });
@@ -2225,6 +2309,8 @@ app.post("/api/quiz/submit", authMiddleware, async (req, res) => {
   try {
     const quizId = sanitizeQuizId(sanitizeText(req.body?.quizId || "quiz", 120, "quizId"));
     const quizTitle = sanitizeText(req.body?.quizTitle || "Quiz", 140, "quizTitle");
+    const rawConceptId = sanitizeText(req.body?.conceptId || req.body?.topic || req.body?.tag || "", 80, "conceptId");
+    const conceptId = rawConceptId || quizTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     const submittedQuestions = Array.isArray(req.body?.questions) ? req.body.questions : [];
     const normalizedQuestions = submittedQuestions
       .slice(0, 120)
@@ -2299,6 +2385,12 @@ app.post("/api/quiz/submit", authMiddleware, async (req, res) => {
       await syncUserBadges(req.auth.uid, badges);
     }
 
+    if (graded.scorePercent < 60 && conceptId) {
+      updateWeakInEdge(req.auth.uid, conceptId, graded.scorePercent).catch((err) => {
+        console.warn("[quiz/submit] TigerGraph weak_in update failed:", err?.message || err);
+      });
+    }
+
     return res.json({
       score: graded.score,
       total: graded.total,
@@ -2345,11 +2437,20 @@ app.post("/api/ask", aiLimiter, async (req, res) => {
   try {
     const question = sanitizeText(req.body?.question || "", 1200, "question").trim();
     const code = sanitizeText(req.body?.code || "", 50000, "code");
+    const studentId = sanitizeText(req.body?.studentId || "", 80, "studentId").trim();
     const outputLanguage = sanitizeText(req.body?.outputLanguage || "English", 40, "outputLanguage");
     const history = validateHistory(req.body?.history);
 
     if (!question) {
       return sendError(res, 400, "BAD_REQUEST", "question is required");
+    }
+
+    if (studentId) {
+      const agentResult = await graphAgentAsk(studentId, question);
+      if (agentResult?.graph_powered === true) {
+        await recordAskUsage(req.headers.authorization);
+        return res.json(agentResult);
+      }
     }
 
     const prompt = buildAskPrompt({ question, code, outputLanguage, history });
@@ -2365,29 +2466,7 @@ app.post("/api/ask", aiLimiter, async (req, res) => {
       ? parsed.followups.map((x) => String(x || "")).filter(Boolean).slice(0, 3)
       : [];
 
-    if (req.headers.authorization?.startsWith("Bearer ")) {
-      const payload = verifyToken(req.headers.authorization.slice(7));
-      if (payload?.uid) {
-        const user = await getUserById(payload.uid);
-        if (user) {
-          const summary = user.analyticsSummary || {};
-          const questionsAsked = Number(summary.questionsAsked || 0) + 1;
-          const attemptsCount = Number(summary.attemptsCount || 0);
-          const syntheticAttempts = Array.from({ length: attemptsCount }, () => ({ score: 0 }));
-          const badges = computeBadges({ attempts: syntheticAttempts, questionsAsked });
-
-          await updateUser(
-            { userId: payload.uid },
-            "SET analyticsSummary.questionsAsked = :questionsAsked, analyticsSummary.badges = :badges, analyticsSummary.attemptsCount = if_not_exists(analyticsSummary.attemptsCount, :zero)",
-            {
-              ":questionsAsked": questionsAsked,
-              ":badges": badges,
-              ":zero": attemptsCount
-            }
-          );
-        }
-      }
-    }
+    await recordAskUsage(req.headers.authorization);
 
     return res.json({ ok: true, answer, followups });
   } catch (err) {

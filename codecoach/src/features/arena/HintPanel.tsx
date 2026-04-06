@@ -150,8 +150,10 @@ export function HintPanel({ studentId, currentCode, problemId }: HintPanelProps)
       style={{
         padding: "20px",
         borderRadius: "20px",
-        background: "#f8fafc",
-        border: "1px solid rgba(148, 163, 184, 0.3)"
+        background: "#111118",
+        border: "1px solid #1e1e2e",
+        color: "#e2e8f0",
+        boxShadow: "0 20px 48px rgba(0, 0, 0, 0.24)"
       }}
     >
       <button
@@ -159,10 +161,10 @@ export function HintPanel({ studentId, currentCode, problemId }: HintPanelProps)
         onClick={handleGetHint}
         disabled={loading}
         style={{
-          border: 0,
+          border: "1px solid rgba(99, 102, 241, 0.24)",
           borderRadius: "12px",
           padding: "12px 16px",
-          background: "#2563eb",
+          background: "linear-gradient(135deg, #6366f1, #7c3aed)",
           color: "#eff6ff",
           cursor: "pointer",
           fontWeight: 700
@@ -172,7 +174,7 @@ export function HintPanel({ studentId, currentCode, problemId }: HintPanelProps)
       </button>
 
       {error && (
-        <p style={{ color: "#b91c1c", marginTop: "12px" }}>{error}</p>
+        <p style={{ color: "#fca5a5", marginTop: "12px" }}>{error}</p>
       )}
 
       {hint && (
@@ -182,8 +184,8 @@ export function HintPanel({ studentId, currentCode, problemId }: HintPanelProps)
               style={{
                 padding: "6px 10px",
                 borderRadius: "999px",
-                background: "#e2e8f0",
-                color: "#0f172a",
+                background: "rgba(99, 102, 241, 0.14)",
+                color: "#c7d2fe",
                 fontWeight: 700,
                 fontSize: "0.9rem"
               }}
@@ -195,8 +197,8 @@ export function HintPanel({ studentId, currentCode, problemId }: HintPanelProps)
                 style={{
                   padding: "6px 10px",
                   borderRadius: "999px",
-                  background: "#dcfce7",
-                  color: "#166534",
+                  background: "rgba(34, 197, 94, 0.12)",
+                  color: "#86efac",
                   fontWeight: 700,
                   fontSize: "0.9rem"
                 }}
@@ -205,14 +207,14 @@ export function HintPanel({ studentId, currentCode, problemId }: HintPanelProps)
               </span>
             )}
           </div>
-          <h3 style={{ marginBottom: "8px", color: "#0f172a" }}>Hint</h3>
-          <p style={{ margin: 0, color: "#334155", lineHeight: 1.6 }}>{displayedHint}</p>
+          <h3 style={{ marginBottom: "8px", color: "#f1f5f9" }}>Hint</h3>
+          <p style={{ margin: 0, color: "#cbd5e1", lineHeight: 1.6 }}>{displayedHint}</p>
         </div>
       )}
 
       <div style={{ marginTop: "20px" }}>
-        <h3 style={{ marginBottom: "8px", color: "#0f172a" }}>Why Am I Stuck?</h3>
-        <p style={{ margin: 0, color: "#475569" }}>{prerequisiteReason}</p>
+        <h3 style={{ marginBottom: "8px", color: "#f1f5f9" }}>Why Am I Stuck?</h3>
+        <p style={{ margin: 0, color: "#94a3b8" }}>{prerequisiteReason}</p>
       </div>
     </aside>
   );

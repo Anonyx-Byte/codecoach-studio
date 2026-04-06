@@ -65,7 +65,7 @@ async function runQuery(queryName, params = {}) {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json"
       },
-      timeout: 3000
+      timeout: 15000
     });
     return response.data;
   } catch (err) {
@@ -89,4 +89,4 @@ async function ping() {
   }
 }
 
-module.exports = { runQuery, ping };
+module.exports = { runQuery, ping, getToken };

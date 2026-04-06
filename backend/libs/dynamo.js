@@ -129,6 +129,19 @@ async function ensureTablesIfNeeded() {
     ]
   });
 
+  await ensureTable("ArenaResults", {
+    TableName: "ArenaResults",
+    BillingMode: "PAY_PER_REQUEST",
+    AttributeDefinitions: [
+      { AttributeName: "studentId", AttributeType: "S" },
+      { AttributeName: "timestamp",  AttributeType: "S" }
+    ],
+    KeySchema: [
+      { AttributeName: "studentId", KeyType: "HASH" },
+      { AttributeName: "timestamp",  KeyType: "RANGE" }
+    ]
+  });
+
   try {
     await ddb.send(new UpdateTimeToLiveCommand({
       TableName: "Sessions",

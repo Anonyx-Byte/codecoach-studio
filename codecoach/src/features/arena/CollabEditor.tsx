@@ -6,6 +6,7 @@ type CollabEditorProps = {
   roomId: string;
   initialCode?: string;
   language?: string;
+  onCodeChange?: (code: string) => void;
 };
 
 function getSocketUrl() {
@@ -17,7 +18,8 @@ function getSocketUrl() {
 export function CollabEditor({
   roomId,
   initialCode = "// Start collaborating here",
-  language = "javascript"
+  language = "javascript",
+  onCodeChange
 }: CollabEditorProps) {
   const [code, setCode] = useState(initialCode);
   const socketRef = useRef<Socket | null>(null);
@@ -54,26 +56,31 @@ export function CollabEditor({
         marginTop: "20px",
         borderRadius: "20px",
         overflow: "hidden",
-        border: "1px solid rgba(148, 163, 184, 0.3)"
+        border: "1px solid #1e1e2e",
+        background: "#111118",
+        boxShadow: "0 20px 48px rgba(0, 0, 0, 0.28)"
       }}
     >
       <div
         style={{
           padding: "12px 16px",
-          background: "#0f172a",
+          background: "linear-gradient(135deg, rgba(99, 102, 241, 0.16), rgba(17, 17, 24, 0.98))",
           color: "#f8fafc",
-          fontWeight: 700
+          fontWeight: 700,
+          borderBottom: "1px solid #1e1e2e"
         }}
       >
         Collaborative Editor: {roomId}
       </div>
       <Editor
         height="420px"
+        theme="vs-dark"
         language={language}
         value={code}
         onChange={(value) => {
           const nextCode = value ?? "";
           setCode(nextCode);
+          onCodeChange?.(nextCode);
 
           if (isRemoteUpdateRef.current) {
             isRemoteUpdateRef.current = false;

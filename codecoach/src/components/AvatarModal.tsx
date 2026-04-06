@@ -145,7 +145,7 @@ export default function AvatarModal({
 
             <div>
               <div style={{ fontWeight: 700 }}>Would you like the avatar to read the explanation aloud?</div>
-              <div style={{ fontSize: 13, color: "#6b7280" }}>Audio will be played locally via your browser.</div>
+              <div style={{ fontSize: 13, color: "#94a3b8" }}>Audio will be played locally via your browser.</div>
             </div>
           </div>
 
@@ -182,8 +182,8 @@ export default function AvatarModal({
           </div>
 
           {showTranscript && (
-            <div style={{ maxHeight: 220, overflow: "auto", background: "#f8fafc", padding: 10, borderRadius: 6 }}>
-              <div style={{ fontSize: 13, color: "#374151", whiteSpace: "pre-wrap" }}>{transcript}</div>
+            <div style={{ maxHeight: 220, overflow: "auto", background: "#111118", padding: 10, borderRadius: 10, border: "1px solid #1e1e2e" }}>
+              <div style={{ fontSize: 13, color: "#cbd5e1", whiteSpace: "pre-wrap" }}>{transcript}</div>
             </div>
           )}
         </div>
@@ -204,18 +204,20 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(0,0,0,0.35)",
+    background: "rgba(10, 10, 15, 0.78)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    zIndex: 9999
+    zIndex: 9999,
+    backdropFilter: "blur(10px)"
   },
   modal: {
     width: 720,
     maxWidth: "96%",
-    background: "#fff",
-    borderRadius: 12,
-    boxShadow: "0 8px 30px rgba(2,6,23,0.2)",
+    background: "#111118",
+    borderRadius: 16,
+    border: "1px solid #1e1e2e",
+    boxShadow: "0 28px 72px rgba(0, 0, 0, 0.56)",
     overflow: "hidden"
   },
   header: {
@@ -223,14 +225,15 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "space-between",
     alignItems: "center",
     padding: 12,
-    borderBottom: "1px solid #eef2ff"
+    borderBottom: "1px solid #1e1e2e",
+    color: "#f1f5f9"
   },
   avatarWrap: {
     width: 96,
     height: 96,
     borderRadius: 16,
     overflow: "hidden",
-    background: "#eef2ff",
+    background: "rgba(99, 102, 241, 0.14)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center"
@@ -244,39 +247,43 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     fontWeight: 700,
     fontSize: 18,
-    color: "#1f2937",
-    background: "#dbeafe"
+    color: "#e2e8f0",
+    background: "linear-gradient(135deg, rgba(99, 102, 241, 0.22), rgba(139, 92, 246, 0.16))"
   },
   closeBtn: {
-    background: "transparent",
-    border: "none",
+    background: "rgba(99, 102, 241, 0.08)",
+    border: "1px solid #1e1e2e",
+    color: "#cbd5e1",
+    borderRadius: 10,
+    width: 32,
+    height: 32,
     fontSize: 16,
     cursor: "pointer"
   },
   primaryBtn: {
     marginRight: 8,
-    background: "#2563eb",
+    background: "linear-gradient(135deg, #6366f1, #7c3aed)",
     color: "#fff",
     padding: "8px 12px",
-    borderRadius: 6,
-    border: "none",
+    borderRadius: 10,
+    border: "1px solid rgba(99, 102, 241, 0.24)",
     cursor: "pointer"
   },
   secondaryBtn: {
     marginRight: 8,
-    background: "#e2e8f0",
-    color: "#111827",
+    background: "#161622",
+    color: "#e2e8f0",
     padding: "8px 12px",
-    borderRadius: 6,
-    border: "none",
+    borderRadius: 10,
+    border: "1px solid #1e1e2e",
     cursor: "pointer"
   },
   ghostBtn: {
     background: "transparent",
-    color: "#6b7280",
+    color: "#94a3b8",
     padding: "8px 12px",
-    borderRadius: 6,
-    border: "1px solid transparent",
+    borderRadius: 10,
+    border: "1px solid #1e1e2e",
     cursor: "pointer"
   }
 };

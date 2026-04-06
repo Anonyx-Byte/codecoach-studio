@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ':*)",
+      "Bash(node backend/scripts/seed-demo-analytics.js)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vite:*)",
+      "Bash(node backend/scripts/install-tg-queries.js)",
+      "Bash(grep -v '^$')",
+      "Bash(tar -cf ../backend-deploy.tar --exclude='node_modules' --exclude='.env' --exclude='deploy.zip' --exclude='lambda' --exclude='lambdas' .)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rebase:*)"
+    ]
+  }
+}
