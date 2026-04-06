@@ -1,371 +1,414 @@
-# Design Document: 
+# CodeCoach AI — Graph-Powered Skill Intelligence Platform
+## Design Document
+
+---
 
 ## Introduction
 
- CodeCoachStudiois an AI-powered platform that explains code in simple, multilinguallanguage and guides learners step-by-step.
- 
--  It combinescode explanation, doubt-solving, flashcard revision, and quiz practice in one unified studio.
--  Instructors and students can generate, upload, or manually create quizzes with instant scoring and optional proctored mode.
--  The goal is to improve "concept clarity, revision, and interview readiness" through interactive, AI-assisted learning.
+**CodeCoach AI** is a graph-powered learning platform that uses TigerGraph knowledge graphs to find WHY students struggle, not just WHAT they got wrong. Unlike traditional tutoring platforms that treat learning as a list, CodeCoach treats it as a graph — enabling root cause analysis, prerequisite gap detection, knowledge debt scoring, and predictive struggle forecasting.
+
+**Tagline:** An AI coding tutor that uses knowledge graphs to find why you're stuck, not just what you got wrong.
+
+**Key Differentiator:** When a student fails a problem, CodeCoach traverses 4 hops through their prerequisite graph, calculates knowledge debt, predicts future struggles, matches them with peers who overcame the same gap, and asks Socratic questions targeting the exact missing concept. No SQL database can do this. Only a graph.
+
+---
 
 ## Overview
 
-This design outlines the migration from a file-based JSON database to a production-ready serverless architecture using Amazon DynamoDB for persistent storage and Amazon ElastiCache(Redis/Valkey) for distributed caching and rate limiting. The migration maintains complete backward compatibility with existing API contracts while eliminating race conditions, enabling horizontal scaling, and improving performance under load.
+This design outlines a full-stack AI tutoring platform powered by:
 
-The architecture follows a cloud-native approach using managed AWS services:
+- **TigerGraph Cloud** for knowledge graph operations (GSQL queries, multi-hop traversals, PageRank)
+- **LangChain ReAct Agents** for autonomous graph reasoning with tool-based decision making
+- **AWS Bedrock / Groq** for AI code explanation, quiz generation, and content creation
+- **DynamoDB** for scalable user data, analytics, and quiz attempts
+- **Socket.IO + Piston API** for real-time 1v1 coding battles with sandboxed execution
+- **Redis** for optional caching and rate limiting (graceful fallback to in-memory)
+- **Amazon Polly** for voice synthesis (graceful fallback to browser SpeechSynthesis)
 
-- **Frontend Layer**: React application hosted on AWS Amplify
-- **Application Layer**: Node.js + Express backend deployed on AWS Elastic Beanstalk
-- **AI Layer**: AWS Bedrock (Gemma) with Groq as a fallback inference provider
-- **Data Layer**: Amazon DynamoDB for scalable storage of users, sessions, and analytics
-- **Cache Layer**: Amazon ElastiCache (Redis/Valkey) for response caching and distributed rate limiting
-- **Voice Layer**: Amazon Polly for optional speech synthesis of explanations
+The platform implements 14 core features including AI Code Explainer, Graph-Powered Skill Map, AI Learning Flowchart, Graph AI Chat (ReAct Agent), Smart Quiz Studio, Arena Battle Mode, Knowledge Debt Dashboard, Impostor Syndrome Detection, GNN-Lite Prediction, Socratic Graph Questioning, and more.
+
+---
+
 ## Architecture
 
 ### High-Level Architecture
 
-```mermaid
-graph TB
-
-    USER[User Browser]
-
-    AMP[AWS Amplify<br>Frontend Hosting]
-
-    CF[Amazon CloudFront CDN]
-
-    EB[AWS Elastic Beanstalk<br>Node.js + Express API]
-
-    DDB[(Amazon DynamoDB<br>Users • Analytics • Sessions)]
-
-    RD[(Amazon ElastiCache Redis<br>Caching + Rate Limiting)]
-
-    BR[AWS Bedrock<br>Gemma Model]
-
-    GQ[Groq API<br>Llama 3.1 Fallback]
-
-    PL[Amazon Polly<br>Speech Synthesis]
-
-    S3[(Amazon S3<br>Backups / Assets)]
-
-    USER --> AMP
-    AMP --> CF
-    CF --> EB
-
-    EB --> DDB
-    EB --> RD
-
-    EB --> BR
-    EB --> GQ
-
-    EB --> PL
-
-    DDB --> S3
-
-    style AMP fill:#8A2BE2,color:#fff
-    style EB fill:#6A5ACD,color:#fff
-    style CF fill:#4B0082,color:#fff
-    style DDB fill:#FF9900
-    style RD fill:#DC143C,color:#fff
-    style BR fill:#FF9900
-    style GQ fill:#00BFFF
-    style PL fill:#FF9900
-    style S3 fill:#FF9900
 ```
-
-### Data Flow
-
-#### Write Operations
-
-1. User sends a request from the web application hosted on **AWS Amplify**
-2. Request passes through **Amazon CloudFront CDN**
-3. Request reaches the **Elastic Beanstalk backend API (Node.js + Express)**
-4. Backend checks **rate limits using Redis (ElastiCache)**
-5. Request data is validated and sanitized
-6. If AI processing is required, the backend calls:
-   - **AWS Bedrock (Gemma)** for code explanation or quiz generation
-   - **Groq API** as a fallback inference provider
-7. Processed data is stored in **Amazon DynamoDB**
-8. Cache entries in **Redis** are updated or invalidated
-9. Response is returned to the client through CloudFront
-
----
-
-#### Read Operations
-
-1. User request originates from the **Amplify-hosted frontend**
-2. Request is routed through **CloudFront CDN**
-3. Request reaches the **Elastic Beanstalk API**
-4. Backend checks **Redis cache**
-5. If cache hit → return cached response immediately
-6. If cache miss:
-   - Query **DynamoDB** for stored data
-7. Retrieved data is cached in **Redis**
-8. Response is returned to the user
-
----
-
-#### AI Processing Flow
-
-1. User submits code for explanation or asks a tutoring question
-2. Backend prepares a structured prompt
-3. AI inference is requested from:
-   - **AWS Bedrock (Gemma)** as the primary model
-   - **Groq (Llama 3.1)** as fallback
-4. AI response is processed into structured output:
-   - Summary
-   - Key concepts
-   - Edge cases
-   - Flashcards
-5. Optional **Amazon Polly** voice synthesis generates audio explanations
-6. Final response is returned to the frontend
-
----
-
-#### Analytics Tracking
-
-1. User completes a quiz attempt
-2. Backend calculates the score and metadata
-3. Results are stored in the **DynamoDB Analytics table**
-4. User progress metrics are updated
-5. Analytics dashboard reads aggregated results from DynamoDB
-
-###FLOWCHART:
-```mermaid
-flowchart TD
-  A[User opens CodeCoach Studio] --> B[Frontend checks /api/health]
-  B --> C[User pastes code in Monaco editor]
-  C --> D[Click Explain Code]
-  D --> E[Frontend POST /api/explain]
-  E --> F[Backend validates + rate-limits request]
-  F --> G[Backend calls AI via provider client]
-  G --> H[Backend extracts/parses/normalizes JSON]
-  H --> I[Frontend renders summary, responsibilities, edge cases, unit test, flashcards, confidence]
-
-  I --> J[Optional: Tutor Voice]
-  J --> K[Frontend POST /api/voice/synthesize]
-  K --> L{AWS Polly available?}
-  L -->|Yes| M[Play AWS Polly audio]
-  L -->|No| N[Fallback to browser SpeechSynthesis]
-
-  I --> O[Optional: Ask AI Mentor]
-  O --> P[Frontend POST /api/ask with code + chat history]
-  P --> Q[Backend validates, calls AI, returns answer + followups]
-  Q --> R[Frontend renders mentor response with formatted code blocks]
-
-  I --> S[Optional: Run code output]
-  S --> T[Frontend POST /api/run with selected language]
-  T --> U[Backend executes via runtime service + timeout]
-  U --> V[Frontend shows stdout/stderr/compile output]
-
-  I --> W[Open Quiz Studio]
-  W --> X{Quiz source}
-  X -->|AI Generate| Y[POST /api/quiz/generate]
-  X -->|Upload JSON| Z[Parse + normalize uploaded quiz]
-  X -->|Instructor Editor| AA[Create/edit custom quiz manually]
-
-  Y --> AB[Quiz ready]
-  Z --> AB
-  AA --> AB
-
-  AB --> AC[Default opens in Take Quiz mode]
-  AC --> AD{Proctored mode enabled?}
-  AD -->|Yes| AE[Track warnings/events]
-  AE --> AF[POST /api/proctor/event for authenticated users]
-  AD -->|No| AG[Standard attempt]
-
-  AF --> AH[Local grading + score]
-  AG --> AH
-  AH --> AI[POST /api/analytics/attempt for authenticated users]
-  AI --> AJ[View results, export JSON, open analytics dashboard]
-
-  A --> AK[Optional auth: Email/Password or Google Sign-In]
-  AK --> AL[Receive auth token, load /api/auth/me profile]
+User (React SPA)
+   |
+   |-- Google OAuth ---------> Backend (Express)
+   |                           |
+   |-- Explain Code ---------->|-- callModel (Bedrock/Groq) --> AI Analysis
+   |                           |
+   |-- Quiz Generate/Grade --->|
+   |-- Study Plan/Flashcards ->|
+   |                           |
+   |-- Graph AI Chat --------->|-- LangChain ReAct Agent
+   |                           |   |-- Tool: get_skill_gaps ------> TigerGraph
+   |                           |   |-- Tool: get_prereq_chain ----> (skillIntelligence)
+   |                           |   |-- Tool: find_similar ---------> (arenaMatchmaking)
+   |                           |
+   |-- Skill Map ------------->|-- TigerGraph REST API
+   |                           |   |-- skillIntelligence query
+   |                           |   |-- knowledgeDebt query
+   |                           |   |-- tg_pagerank (GDSL)
+   |                           |
+   |-- Arena Battle ---------->|-- Matchmaker + AI Problem Gen
+   |                           |   |-- Piston API (code execution)
+   |                           |   |-- TigerGraph (weak_in edge updates)
+   |                           |
+   |-- Quiz Submit ----------->|-- DynamoDB (attempt record)
+   |                               + TigerGraph (weak_in edge upsert)
 ```
 
 
+### Tech Stack
 
-### Components and Interfaces
-
-**DynamoDB Module**
-
-Responsible for handling database operations such as:
-
-- Retrieving user data
-- Storing analytics events
-- Managing session records
-
-Uses the AWS SDK DynamoDB Document Client with retry strategies and conditional writes.
-
----
-
-**Redis Cache Layer**
-
-Provides caching and distributed rate limiting using Amazon ElastiCache.
-
-Functions include:
-
-- Caching user profiles
-- Caching analytics dashboards
-- Rate limiting API requests
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | React 19 + TypeScript, Vite, vis-network (graph viz), SVG flowcharts, Monaco Editor |
+| **Backend** | Node.js + Express.js |
+| **AI/LLM** | AWS Bedrock (Gemma) / Groq (LLaMA 3.1 8B Instant), LangChain ReAct agents |
+| **Graph DB** | TigerGraph Cloud (GSQL queries, REST API, GDSL PageRank) |
+| **Database** | AWS DynamoDB (users, analytics, quiz attempts, badges, arena results) |
+| **Code Execution** | Piston API (sandboxed multi-language runner) |
+| **Auth** | Google Sign-In (GSI) with JWT |
+| **Caching** | Redis (optional, graceful fallback to in-memory) |
+| **Voice** | Amazon Polly (graceful fallback to browser SpeechSynthesis) |
+| **Real-Time** | Socket.IO for arena collaboration |
 
 ---
 
-**User Repository**
+## Core Features
 
-Encapsulates user-related data access logic.
+### 1. AI Code Explainer
 
-Responsibilities include:
+**Description:** Paste any code and receive a structured breakdown including summary, responsibilities, edge cases, time/space complexity, and revision flashcards with flip-card UI.
 
-- Finding users by email or ID
-- Creating new users
-- Updating profile and analytics data
-- Managing cache invalidation
+**Implementation:**
+- Frontend sends code + language + output language to `/api/explain`
+- Backend constructs prompt with structured JSON schema
+- AI (Bedrock/Groq) generates explanation
+- Backend extracts JSON even if wrapped in markdown fences
+- Frontend renders with flip-card flashcards for revision
 
-
-### Health Check Endpoint
-
-The backend exposes `/api/health` which verifies the status of:
-
-- DynamoDB connectivity
-- Redis cache availability
-- AI provider configuration
-
-This endpoint is used by monitoring systems and deployment platforms.
-
-
-### DynamoDB Tables
-
-**Users Table**
-
-Stores user profile and authentication data.
-
-Key attributes:
-
-- `userId` (Partition Key)
-- `email`
-- `profile`
-- `analytics`
-- `createdAt`
-- `updatedAt`
-
-A Global Secondary Index on `email` allows quick lookup during login.
+**Key Components:**
+- `buildExplainPrompt()` - Constructs AI prompt with JSON schema
+- `tryExtractJson()` - Robust JSON extraction from AI responses
+- Rate limiting: 24 requests/minute per IP
 
 ---
 
-**Analytics Table**
+### 2. Graph-Powered Skill Map
 
-Tracks user activity events such as:
+**Description:** Interactive knowledge graph (vis-network) showing concepts, prerequisites, and weak areas. Color-coded nodes by mastery level. AI analysis powered by TigerGraph data.
 
-- quiz attempts
-- questions asked
-- code execution events
+**Implementation:**
+- Frontend requests `/api/graph/skill-map/:studentId`
+- Backend queries TigerGraph `skillIntelligence` GSQL query
+- Backend normalizes concepts and builds vis-network node/edge structure
+- Nodes colored by weakness_score: red (>60), orange (30-60), green (<30)
+- Nodes sized proportionally: 20 + (weakness_score / 5)
+- Edges show prerequisite dependencies with arrows
 
-Primary key structure:
+**Key Components:**
+- `buildSkillIntelligenceResponse()` - Normalizes TigerGraph data
+- `normalizeConcepts()` - Handles multiple TigerGraph response formats
+- vis-network library for interactive graph rendering
 
-- `userId` (Partition Key)
-- `timestamp` (Sort Key)
+---
 
+### 3. AI Learning Flowchart
 
-### Redis Key Patterns
+**Description:** SVG-rendered study path showing Start → Prerequisites → Practice Checkpoints → Weak Concepts → Mastery Goal. Generated from graph traversal + AI recommendations.
 
-Used for caching and rate limiting.
+**Implementation:**
+- Frontend requests `/api/graph/learning-flowchart`
+- Backend queries TigerGraph `skillIntelligence`
+- Backend builds 5-phase flowchart from actual graph data (no AI hallucination)
+- AI generates specific study recommendations per weak concept (optional enhancement)
+- Frontend renders as SVG with positioned nodes and directed edges
 
-Examples:
+**Phases:**
+1. Start Here (root cause)
+2. Prerequisites (foundation concepts)
+3. Practice & Apply (checkpoint)
+4. Weak Concepts (what to fix)
+5. Mastery Check → Goal
 
-ratelimit:ai:{ip}
-user:id:{userId}
-analytics:dashboard:{userId}
+**Key Components:**
+- Node positioning with x/y coordinates
+- Edge connections showing learning flow
+- AI-generated recommendations per concept
 
+---
 
-## System Reliability Considerations
+### 4. Graph AI Chat (LangChain ReAct Agent)
 
-The system includes several mechanisms to ensure reliability and consistency.
+**Description:** Conversational AI mentor that queries TigerGraph in real-time using 3 tools. Shows "Graph-Powered" vs "General AI" badge on each response.
 
-### Concurrent Writes
-DynamoDB conditional writes prevent duplicate user registrations and ensure safe updates.
+**Implementation:**
+- Frontend sends question to `/api/graph/agent-ask`
+- Backend invokes LangChain ReAct Agent with Groq LLM
+- Agent autonomously decides which TigerGraph tools to call
+- Agent executes tools and reasons about results
+- Backend returns answer + tools_used + graph_powered flag
+- Frontend displays badge based on tool usage
 
-### Rate Limiting
-Redis-based rate limiting prevents API abuse and protects backend resources.
+**Tools:**
+1. `get_skill_gaps` - Queries skillIntelligence for weak concepts + prerequisites
+2. `get_prerequisite_chain` - Returns ordered learning path
+3. `find_similar_students` - Queries arenaMatchmaking for peer matches
 
-### Cache Consistency
-Redis cache entries are invalidated whenever user data is updated in DynamoDB to ensure fresh reads.
+**Key Components:**
+- `createReactAgent()` - LangChain agent with tool-based reasoning
+- `AgentExecutor` - Manages agent iterations (max 4)
+- Fallback to `callModel` with TigerGraph context if agent fails
 
-### Graceful Degradation
-If Redis becomes unavailable, the application continues operating without caching rather than failing.
+---
 
-### Environment Validation
-The server validates required environment variables at startup to prevent misconfiguration.
+### 5. Smart Quiz Studio
 
-### Secure Authentication
-Passwords are hashed using bcrypt to protect user credentials.
+**Description:** AI-generated quizzes (MCQ + text + code) with configurable topic/difficulty/count. Proctored mode with fullscreen lock, tab-switch detection, copy/paste blocking. AI-assisted grading for descriptive answers.
 
+**Implementation:**
+- Frontend configures quiz parameters (topic, difficulty, count, context code)
+- Backend generates quiz using `buildQuizPrompt()`
+- AI returns structured JSON with 3 question types
+- Frontend renders quiz with proctored mode features
+- On submit, backend grades and stores in DynamoDB + updates TigerGraph edges
+- Frontend shows results with improvement tracking
 
-## Error Handling
+**Question Types:**
+- MCQ: 4 options, correctIndex
+- Text: keywords for grading
+- Code: starterCode, expectedKeyPoints
 
-### DynamoDB Errors
-- ConditionalCheckFailedException → return **409 Conflict** (duplicate registration)
-- ValidationException → return **400 Bad Request**
-- ResourceNotFoundException → return **503 Service Unavailable**
-- Network errors → retried automatically by AWS SDK with exponential backoff
-
-### Redis Errors
-If Redis becomes unavailable:
-- caching is skipped
-- rate limiting falls back to application logic
-- requests continue processing
-
-### Authentication Errors
-- Invalid credentials → **401 Unauthorized**
-- Expired tokens → **401 Unauthorized**
-- Hashing errors → **500 Internal Server Error**
-
-### AI Service Errors
-- Bedrock throttling → retry with exponential backoff
-- Polly errors → fallback to browser speech synthesis
-
-## Testing Strategy
-
-### Unit Testing
-Unit tests verify core application modules including:
-
-- DynamoDB data access operations
-- Redis caching functions
-- User repository operations
-- Rate limiting logic
-- Authentication utilities
-- Environment configuration validation
-
-### Integration Testing
-Integration tests validate interactions between system components:
-
-- User registration and login flow
-- Quiz generation and grading
-- AI explanation responses
-- Cache hit and miss scenarios
-- Redis fallback behavior
-
-### Load Testing
-Basic load testing ensures the system can handle multiple concurrent users.
-
-Test scenarios include:
-
-- 100+ concurrent requests
-- sustained traffic for several minutes
-- measurement of response latency and cache efficiency
-
-### Post-Migration Validation
-
-1. Test user registration and login
-2. Test Google OAuth flow
-3. Test AI code explanation endpoint
-4. Test voice synthesis endpoint
-5. Test code execution endpoint
-6. Verify rate limiting across multiple requests
-7. Check CloudWatch logs for errors
-8. Monitor DynamoDB metrics (read/write capacity, throttling)
-9. Monitor Redis metrics (hit rate, memory usage)
-10. Run load tests to verify performance
+**Key Components:**
+- `buildQuizPrompt()` - Structured prompt for quiz generation
+- `buildGradePrompt()` - AI-assisted grading for text answers
+- Proctored mode: fullscreen API, visibility change detection, clipboard blocking
 
 
+### 6. Arena Battle Mode
 
+**Description:** 1v1 coding contests (student vs student or vs AI opponent). AI generates unique problems tailored to both players' weak concepts from their graph data. Code executed via Piston API, scored on correctness + speed.
+
+**Implementation:**
+- Frontend requests `/api/arena/match` with studentId + embedding
+- Backend queries TigerGraph `arenaMatchmaking` (4-hop traversal)
+- Backend uses cosine similarity (60%) + weakness_score (40%) for matching
+- Backend generates unique problem targeting shared_weak_concepts
+- Frontend displays problem + countdown timer
+- Students submit code to `/api/arena/submit`
+- Backend executes via Piston API with 8-second timeout
+- Backend scores based on test pass rate + speed bonus
+- Backend updates TigerGraph weak_in edges based on performance
+- Backend persists results to DynamoDB ArenaResults table
+
+**Scoring Formula:**
+```
+base_score = (passed_tests / total_tests) * 100
+speed_bonus = timeTaken < timeLimit * 0.5 ? 20 : 0
+final_score = min(100, base_score + speed_bonus)
+```
+
+**Key Components:**
+- `findArenaMatch()` - Matchmaking with cosine similarity
+- `generateArenaProblem()` - AI problem generation targeting weaknesses
+- `runCodeAgainstTestCase()` - Piston API execution
+- `updateArenaWeakEdge()` - TigerGraph edge updates
+
+---
+
+### 7. Knowledge Debt Dashboard
+
+**Description:** `knowledgeDebt` query ranks concepts by urgency (error_frequency). Shows total debt score and prioritized study list.
+
+**Implementation:**
+- Frontend requests `/api/graph/knowledge-debt/:studentId`
+- Backend queries TigerGraph `knowledgeDebt` GSQL query
+- Backend calculates total_debt by summing all debt_scores
+- Backend classifies debt_level: critical (>200), high (>100), moderate (≤100)
+- Backend generates optimal_path by sorting concepts by blocks_count
+- Frontend displays with color-coded urgency
+
+**Debt Score Calculation:**
+```
+debt_score = error_frequency * blocks_count
+total_debt = sum(all debt_scores)
+```
+
+**Key Components:**
+- `knowledgeDebt` GSQL query with @debt_score and @blocks_count accumulators
+- Optimal path generation prioritizing blocking concepts
+
+---
+
+### 8. Impostor Syndrome Detection
+
+**Description:** `findImpostors` query identifies students with high quiz scores but many weak fundamentals — flags potential knowledge gaps hiding behind good scores.
+
+**Implementation:**
+- Frontend requests `/api/graph/impostors`
+- Backend queries TigerGraph `findImpostors` with thresholds
+- Backend filters students with avg_quiz_score > 75 AND many weak_in edges
+- Frontend displays impostor list with warning indicators
+
+**Use Cases:**
+- Instructor dashboards to identify at-risk students
+- Personalized intervention triggers
+- Early warning system for conceptual gaps
+
+**Key Components:**
+- `findImpostors` GSQL query with dual threshold filtering
+- Demo mode fallback with hardcoded impostor data
+
+---
+
+### 9. Analytics Dashboard
+
+**Description:** Quiz score trends over time, streak tracking, weak area heatmap, badge collection.
+
+**Implementation:**
+- Backend queries DynamoDB Analytics table for user attempts
+- Backend computes: totalAttempts, avgScore, scoreTrend, weakTopics, badges
+- Backend calculates streaks based on consecutive activity days
+- Backend generates detailed analytics: topicAccuracy, weeklyActivity, completionRate, improvementPercentage
+- Frontend renders with Chart.js visualizations
+
+**Badges:**
+1. First Quiz (1+ attempts)
+2. Quiz Explorer (5+ attempts)
+3. 5 Day Study Streak (5 consecutive days)
+4. 80% Accuracy (avgScore ≥ 80)
+5. Improvement Champion (last score - first score ≥ 15)
+6. Curious Learner (5+ questions asked)
+
+**Key Components:**
+- `computeBadges()` - Badge award logic
+- `summarizeAnalytics()` - Core metrics calculation
+- `buildDetailedAnalytics()` - Extended metrics with trends
+
+---
+
+### 10. Tutor Voice
+
+**Description:** Floating AI voice panel for quick explanations while coding.
+
+**Implementation:**
+- Frontend sends text to `/api/voice/synthesize`
+- Backend uses Amazon Polly for TTS
+- Backend returns MP3 audio stream
+- Frontend plays audio in floating panel
+- Graceful fallback to browser SpeechSynthesis if Polly unavailable
+
+**Key Components:**
+- Amazon Polly client with configurable voice/language
+- Rate limiting: 18 requests/minute per IP
+- Browser SpeechSynthesis fallback
+
+---
+
+### 11. Socratic Graph Questioning
+
+**Description:** Instead of giving answers, the AI asks targeted questions based on prerequisite gaps. If stuck on recursion, it asks "What happens to the call stack when a function calls itself?" — question generated by traversing knowledge graph.
+
+**Implementation:**
+- Frontend requests `/api/graph/socratic-question` with studentId + problemContext + currentCode
+- Backend queries TigerGraph `skillIntelligence`
+- Backend identifies weakest prerequisite
+- Backend uses AI to generate Socratic question targeting that concept
+- Frontend displays question with targeted concept name
+
+**Key Components:**
+- Prerequisite sorting by weakness_score
+- AI prompt with temperature 0.4 for focused questions
+- 2-sentence maximum for conciseness
+
+---
+
+### 12. GNN-Lite Prediction (Graph Message Passing)
+
+**Description:** Inspired by Graph Neural Networks (Kipf & Welling, 2017), weakness signals propagate through prerequisite edges weighted by PageRank centrality to predict which concepts you'll struggle with before attempting them.
+
+**Implementation:**
+- Frontend requests `/api/graph/predict/:studentId`
+- Backend queries TigerGraph `skillIntelligence` + `tg_pagerank`
+- Backend propagates weakness through prerequisite edges
+- Backend calculates predicted_difficulty = weakness_score * pagerank_score * 10
+- Backend returns top 3 predicted struggles with reasons
+- Frontend displays predictions with "will_struggle" flags
+
+**Prediction Formula:**
+```
+predicted_score = weakness_score * pagerank_centrality * 10
+will_struggle = predicted_score < 50
+```
+
+**Key Components:**
+- PageRank weighting for concept importance
+- Multi-hop weakness propagation
+- Predictive scoring algorithm
+
+---
+
+### 13. LangChain ReAct Agent (Detailed)
+
+**Description:** Every AI answer is backed by autonomous graph reasoning. The agent (based on Yao et al. 2023 ReAct paper) decides which TigerGraph tool to call, executes it, then answers with real graph data.
+
+**Implementation:**
+- Agent uses Thought → Action → Observation loop
+- Agent has access to 3 TigerGraph tools
+- Agent iterates up to 4 times to gather information
+- Agent returns final answer with intermediate steps
+- Frontend shows which tools were used for transparency
+
+**ReAct Loop:**
+```
+1. Thought: "I need to check the student's weak concepts"
+2. Action: get_skill_gaps
+3. Action Input: {"studentId": "s001"}
+4. Observation: "Root cause: Recursion. Weak: Recursion, Trees. Prerequisites: Stack Frames, Base Cases"
+5. Thought: "Now I can answer based on their graph data"
+6. Final Answer: "You're struggling with recursion because you're missing stack frames..."
+```
+
+**Key Components:**
+- `createReactAgent()` with custom prompt template
+- Tool definitions with Zod schemas
+- Intermediate step tracking for explainability
+
+---
+
+### 14. AI vs Student Arena
+
+**Description:** Compete against an AI opponent whose difficulty adapts to your TigerGraph skill level. Beginners get a slower AI, advanced students face a faster one. AI reveals optimal solution after contest with coaching analysis.
+
+**Implementation:**
+- Frontend requests `/api/arena/ai-match`
+- Backend queries TigerGraph for student skill_level + weak_concepts
+- Backend generates problem targeting weaknesses
+- Backend pre-generates optimal AI solution
+- Backend calculates AI solve time based on skill level
+- Student submits to `/api/arena/ai-result`
+- Backend compares correctness + speed
+- Backend reveals AI solution + coaching analysis
+
+**AI Difficulty Adaptation:**
+```
+base_time = problem.timeLimit * 60 * 0.6
+level_multiplier = skill_level < 50 ? 1.4 : skill_level > 75 ? 0.7 : 1.0
+ai_solve_time = base_time * level_multiplier * random(0.9, 1.1)
+```
+
+**Winner Determination:**
+- User wins: all tests passed AND faster than AI
+- Tie: all tests passed BUT slower than AI
+- AI wins: not all tests passed
+
+**Key Components:**
+- Adaptive AI difficulty calculation
+- Pre-generated optimal solutions
+- Coaching analysis with 5 sections
 
