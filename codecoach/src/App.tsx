@@ -12,12 +12,25 @@ import {
   Tooltip,
   Legend
 } from "chart.js";
+import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import Modal from "./components/Modal";
 import QuizManager from "./components/QuizManager";
 import ChatbotAvatarSync from "./components/ChatbotAvatarSync";
+import SkillMapPage from "./features/skillMap/SkillMapPage";
+import ArenaPage from "./features/arena/ArenaPage";
+import ImpostorBadge from "./features/dashboard/ImpostorBadge";
+import GraphAgentChat from "./features/dashboard/GraphAgentChat";
 import "./App.css";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend);
+ChartJS.defaults.color = "#94a3b8";
+ChartJS.defaults.borderColor = "rgba(30, 30, 46, 0.9)";
+ChartJS.defaults.plugins.legend.labels.color = "#cbd5e1";
+ChartJS.defaults.plugins.tooltip.backgroundColor = "#111118";
+ChartJS.defaults.plugins.tooltip.borderColor = "#1e1e2e";
+ChartJS.defaults.plugins.tooltip.borderWidth = 1;
+ChartJS.defaults.plugins.tooltip.titleColor = "#f1f5f9";
+ChartJS.defaults.plugins.tooltip.bodyColor = "#cbd5e1";
 
 type ExplainResp = {
   ok?: boolean;
@@ -54,6 +67,7 @@ type UserProfile = {
   id: string;
   name: string;
   email: string;
+  studentId?: string;
   createdAt: string;
   profile?: {
     preferredLanguage?: string;
@@ -91,6 +105,12 @@ type AnalyticsData = {
     totalQuestions: number;
     createdAt: string;
   }[];
+  arenaResults?: {
+    wins: number;
+    losses: number;
+    avg_score: number;
+    matches: { problemTitle: string; score: number; timestamp: string }[];
+  };
 };
 
 type StudyPlan = {
@@ -115,8 +135,8 @@ type MentorContentChunk =
 type GoogleWindow = Window & typeof globalThis & {
   google?: any;
 };
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://codecoach-backend-env.eba-bmvw6qgm.us-east-1.elasticbeanstalk.com";
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 const AUTH_TOKEN_KEY = "codecoach-auth-token";
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
 
@@ -158,6 +178,75 @@ function toOneLine(text: string, maxLen = 120) {
   return `${normalized.slice(0, maxLen).trimEnd()}...`;
 }
 
+function FlipCard({ front, back, index }: { front: string; back: string; index: number }) {
+  const [flipped, setFlipped] = useState(false);
+  const cardStyle: React.CSSProperties = {
+    padding: "18px 20px",
+    borderRadius: "16px",
+    display: "flex", flexDirection: "column", gap: "8px",
+    minHeight: "90px",
+  };
+  return (
+    <div
+      onClick={() => setFlipped((f) => !f)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setFlipped((f) => !f); }}
+      style={{
+        cursor: "pointer",
+        animation: `fc-slideIn 0.4s ease ${index * 80}ms both`,
+        transition: "transform 0.15s ease",
+      }}
+    >
+      {!flipped ? (
+        <div style={{
+          ...cardStyle,
+          background: "linear-gradient(135deg, rgba(99,102,241,0.14), rgba(139,92,246,0.08))",
+          border: "1px solid rgba(99,102,241,0.24)",
+        }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "#818cf8", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            Question {index + 1}
+          </div>
+          <div style={{ fontSize: "0.92rem", color: "#f1f5f9", lineHeight: 1.6, fontWeight: 500 }}>
+            {front}
+          </div>
+          <div style={{ fontSize: "0.72rem", color: "#475569", marginTop: "4px" }}>
+            Tap to reveal answer →
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          ...cardStyle,
+          background: "linear-gradient(135deg, rgba(34,197,94,0.12), rgba(22,163,74,0.06))",
+          border: "1px solid rgba(34,197,94,0.24)",
+          animation: "fc-revealIn 0.3s ease",
+        }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "#4ade80", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            Answer {index + 1}
+          </div>
+          <div style={{ fontSize: "0.92rem", color: "#f1f5f9", lineHeight: 1.6 }}>
+            {back}
+          </div>
+          <div style={{ fontSize: "0.72rem", color: "#475569", marginTop: "4px" }}>
+            ← Tap to see question
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes fc-slideIn {
+          from { opacity: 0; transform: translateY(12px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fc-revealIn {
+          from { opacity: 0.6; transform: scale(0.97); }
+          to { opacity: 1; transform: scale(1); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
 function buildQuickFacts(result: ExplainResp | null) {
   if (!result) return [] as string[];
 
@@ -197,7 +286,8 @@ function normalizeAnalyticsPayload(payload: any): AnalyticsData {
     improvementPercentage: Number(src.improvementPercentage || 0),
     completionRate: Number(src.completionRate || 0),
     recommendedPracticeMinutes: Number(src.recommendedPracticeMinutes || 45),
-    recentAttempts: Array.isArray(src.recentAttempts) ? src.recentAttempts : []
+    recentAttempts: Array.isArray(src.recentAttempts) ? src.recentAttempts : [],
+    arenaResults: src.arenaResults || undefined
   };
 }
 
@@ -238,7 +328,7 @@ export default function App() {
   const splitLayoutRef = useRef<HTMLDivElement | null>(null);
   const resizingSplitRef = useRef(false);
   const googleBtnRef = useRef<HTMLDivElement | null>(null);
-  const googleInitRef = useRef(false);
+  const googleLoginRef = useRef<(idToken: string) => Promise<void>>(async () => {});
   const [code, setCode] = useState<string>(
     `// Example: sum function\nfunction sum(a, b) {\n  return a + b;\n}`
   );
@@ -287,6 +377,9 @@ export default function App() {
   const [speechListening, setSpeechListening] = useState(false);
   const speechSupported = Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
+  void setAuthMode;
+  void authLoading;
+
   const selectedLanguageLabel =
     EXPLANATION_LANGUAGES.find((lang) => lang.code === selectedLanguage)?.label ?? "English";
 
@@ -295,6 +388,17 @@ export default function App() {
     `${result?.summary ?? ""} ${(result?.responsibilities ?? []).join(". ")}`.trim();
 
   const quickFacts = useMemo(() => buildQuickFacts(result), [result]);
+  const knowledgeDebtScore = useMemo(() => {
+    if (analytics) {
+      return Math.max(18, Math.min(94, Math.round(100 - analytics.avgScore + analytics.weakTopics.length * 4)));
+    }
+
+    if (result) {
+      return Math.max(34, 74 - quickFacts.length * 3);
+    }
+
+    return 68;
+  }, [analytics, quickFacts.length, result]);
   const scoreTrendChartData = useMemo(() => {
     const points = analytics?.scoreTrend || [];
     return {
@@ -303,8 +407,8 @@ export default function App() {
         {
           label: "Score",
           data: points.map((p) => p.score),
-          borderColor: "#7dd3fc",
-          backgroundColor: "rgba(125, 211, 252, 0.2)",
+          borderColor: "#818cf8",
+          backgroundColor: "rgba(99, 102, 241, 0.18)",
           tension: 0.3
         }
       ]
@@ -319,7 +423,7 @@ export default function App() {
         {
           label: "Accuracy %",
           data: rows.map((r) => r.accuracy),
-          backgroundColor: "rgba(74, 222, 128, 0.5)"
+          backgroundColor: "rgba(34, 197, 94, 0.55)"
         }
       ]
     };
@@ -333,7 +437,7 @@ export default function App() {
         {
           label: "Attempts",
           data: rows.map((r) => r.attempts),
-          backgroundColor: "rgba(196, 181, 253, 0.5)"
+          backgroundColor: "rgba(99, 102, 241, 0.52)"
         }
       ]
     };
@@ -346,6 +450,8 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+
+    void fetch(`${API_BASE_URL}/api/graph/wake`).catch(() => {});
 
     async function pingHealth() {
       try {
@@ -373,7 +479,7 @@ export default function App() {
           console.error("Health check failed:",err);
           setBackendHealth("offline");
           setProviderReady({groq: false, gemma: false});
-       
+          
         }
       }
     }
@@ -408,6 +514,7 @@ export default function App() {
         const payload = await res.json();
         if (active) {
           setUser(payload.user || null);
+          if (payload.user?.id) localStorage.setItem("userId", payload.user.id);
         }
       } catch {
         if (active) {
@@ -493,54 +600,66 @@ export default function App() {
     };
   }, []);
 
+  async function handleGoogleLogin(idToken: string) {
+    if (!idToken) return;
+
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken })
+      });
+      if (!res.ok) throw new Error(await parseApiError(res));
+      const payload = await res.json();
+      const token = payload.token as string;
+      if (!token) throw new Error("No auth token received");
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+      const uid = payload.user?.id || payload.user?.userId;
+      if (uid) {
+        localStorage.setItem("userId", uid);
+        localStorage.setItem("user", JSON.stringify(payload.user));
+      }
+      setAuthToken(token);
+      setUser(payload.user || null);
+      setAuthModalOpen(false);
+    } catch (err: any) {
+      setAuthError(err?.message || "Google sign-in failed");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  // Keep ref current so the Google callback always calls the latest version
+  googleLoginRef.current = handleGoogleLogin;
+
   useEffect(() => {
-    if (!authModalOpen || authMode !== "login" || !googleReady || !GOOGLE_CLIENT_ID) return;
+    if (!authModalOpen || !googleReady || !GOOGLE_CLIENT_ID) return;
     const win = window as GoogleWindow;
     const google = win.google;
-    if (!google?.accounts?.id || !googleBtnRef.current) return;
+    if (!google?.accounts?.id) return;
 
-    if (!googleInitRef.current) {
-      google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: async (resp: { credential?: string }) => {
-          const idToken = String(resp?.credential || "");
-          if (!idToken) return;
-
-          setAuthLoading(true);
-          setAuthError("");
-          try {
-            const res = await fetch(`${API_BASE_URL}/api/auth/google`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ idToken })
-            });
-            if (!res.ok) throw new Error(await parseApiError(res));
-            const payload = await res.json();
-            const token = payload.token as string;
-            if (!token) throw new Error("No auth token received");
-            localStorage.setItem(AUTH_TOKEN_KEY, token);
-            setAuthToken(token);
-            setUser(payload.user || null);
-            setAuthModalOpen(false);
-          } catch (err: any) {
-            setAuthError(err?.message || "Google sign-in failed");
-          } finally {
-            setAuthLoading(false);
-          }
-        }
-      });
-      googleInitRef.current = true;
-    }
-
-    googleBtnRef.current.innerHTML = "";
-    google.accounts.id.renderButton(googleBtnRef.current, {
-      theme: "outline",
-      size: "large",
-      shape: "pill",
-      text: "continue_with",
-      width: 260
+    // Always re-initialize so the callback is fresh (Google GSI allows re-init)
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: (resp: { credential?: string }) => {
+        const idToken = String(resp?.credential || "");
+        googleLoginRef.current(idToken);
+      }
     });
-  }, [authModalOpen, authMode, googleReady]);
+
+    if (googleBtnRef.current) {
+      googleBtnRef.current.innerHTML = "";
+      google.accounts.id.renderButton(googleBtnRef.current, {
+        theme: "outline",
+        size: "large",
+        shape: "pill",
+        text: "continue_with",
+        width: 260
+      });
+    }
+  }, [authModalOpen, googleReady]);
 
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
@@ -659,16 +778,27 @@ export default function App() {
       if (!token) throw new Error("No auth token received");
 
       localStorage.setItem(AUTH_TOKEN_KEY, token);
+      const uid = payload.user?.id || payload.user?.userId;
+      if (uid) {
+        localStorage.setItem("userId", uid);
+        localStorage.setItem("user", JSON.stringify(payload.user));
+      }
       setAuthToken(token);
       setUser(payload.user || null);
       setAuthModalOpen(false);
       setAuthForm({ name: "", email: "", password: "" });
+      if (payload.linked_password) {
+        // Non-blocking toast — account was a Google-only account, password now linked
+        console.info("[Auth] Password linked to Google account successfully");
+      }
     } catch (err: any) {
       setAuthError(err?.message || "Authentication failed");
     } finally {
       setAuthLoading(false);
     }
   }
+
+  void handleAuthSubmit;
 
   function handleLogout() {
     localStorage.removeItem(AUTH_TOKEN_KEY);
@@ -699,7 +829,28 @@ export default function App() {
 
         if (res.ok) {
           const payload = await res.json();
-          setAnalytics(normalizeAnalyticsPayload(payload));
+          const normalized = normalizeAnalyticsPayload(payload);
+
+          // Fetch arena results in parallel
+          try {
+            const arenaRes = await fetch(`${API_BASE_URL}/api/arena/leaderboard`);
+            if (arenaRes.ok) {
+              const arenaData = await arenaRes.json();
+              const studentId = user?.studentId || localStorage.getItem("userId") || "";
+              const myEntry = (arenaData.leaderboard || []).find((e: any) => e.studentId === studentId);
+              if (myEntry) {
+                // Also fetch individual match history from DynamoDB
+                normalized.arenaResults = {
+                  wins: myEntry.wins || 0,
+                  losses: myEntry.losses || 0,
+                  avg_score: myEntry.avg_score || 0,
+                  matches: []
+                };
+              }
+            }
+          } catch {}
+
+          setAnalytics(normalized);
           loaded = true;
           break;
         }
@@ -849,53 +1000,68 @@ export default function App() {
     });
   }
 
-  return (
-    <div className="app-shell">
+  const homePage = (
+    <>
+      <div style={{ padding: "16px 24px 0" }}>
+        <div style={{ display: "grid", gap: "16px", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", alignItems: "start" }}>
+          <ImpostorBadge />
+        </div>
+      </div>
+      <div className="app-shell">
       <div className="app-main" ref={splitLayoutRef} style={{ ["--editor-width" as any]: `${editorWidthPct}%` }}>
         <section className="editor-panel">
           <div className="editor-toolbar">
             <div className="hero-copy">
-              <p className="code-kicker">{"// AI coding mentor for students"}</p>
-              <h1 className="app-title">CodeCoach Studio</h1>
-              <p className="app-subtitle">Get fast, structured code explanations with guided follow-up learning.</p>
-              <div className="study-flow">
+              <p className="code-kicker">{"// Graph-native engineering coach"}</p>
+              <h1 className="app-title">Graph-Powered Skill Intelligence</h1>
+              <p className="app-subtitle">Know why you struggle. Not just what.</p>
+              <div className="hero-badge">
+                <span>Powered by TigerGraph {"\u26A1"}</span>
+              </div>
+              <div className="hero-preview-grid">
+                <article className="hero-preview-card">
+                  <span className="preview-label">Skill Map Preview</span>
+                  <h3>Trace prerequisite gaps before they become blind spots.</h3>
+                  <p>See the bridge between strong concepts, weak nodes, and the exact path to recover momentum.</p>
+                  <div className="mini-skill-graph" aria-hidden="true">
+                    <span className="mini-node core" />
+                    <span className="mini-node stable" />
+                    <span className="mini-node bridge" />
+                    <span className="mini-node weak" />
+                  </div>
+                  <div className="mini-legend">
+                    <span>Core topic</span>
+                    <span>Mastered</span>
+                    <span>Weak node</span>
+                  </div>
+                </article>
+                <article className="hero-preview-card">
+                  <span className="preview-label">Knowledge Debt Score</span>
+                  <h3>Catch hidden friction before it slows your next review.</h3>
+                  <p>A fast signal for prerequisite drag, fragile understanding, and what needs attention next.</p>
+                  <div className="knowledge-score">
+                    <strong>{knowledgeDebtScore}</strong>
+                    <span>/ 100 debt index</span>
+                  </div>
+                  <div className="debt-meter" aria-hidden="true">
+                    <div className="debt-meter-fill" style={{ width: `${knowledgeDebtScore}%` }} />
+                  </div>
+                  <div className="debt-footnote">
+                    <span>{analytics ? `${analytics.weakTopics.length || 0} weak clusters live` : "Live after your next scan"}</span>
+                    <span>{analytics ? `${analytics.recommendedPracticeMinutes || 45} min recovery plan` : "TigerGraph inference ready"}</span>
+                  </div>
+                </article>
+              </div>
+              <div className="study-flow" style={{ marginTop: "16px" }}>
                 {STUDY_MILESTONES.map((step, index) => (
                   <span key={step} className="study-chip">{`${index + 1}. ${step}`}</span>
                 ))}
               </div>
-              <p className="capability-note">
-                Quiz Studio supports AI quiz generation, uploading your own quiz JSON, and Instructor Editor for custom sets, with optional proctored attempts.
-              </p>
             </div>
             <div className="toolbar-actions">
-              <div className="top-utility">
-                <span className={`backend-pill ${backendHealth}`}>{backendHealth === "online" ? "Backend online" : backendHealth === "offline" ? "Backend offline" : "Checking backend"}</span>
-                <button
-                  onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
-                  className="theme-toggle"
-                >
-                  {theme === "dark" ? "Light" : "Dark"}
-                </button>
-              </div>
-
-              <div className="auth-strip">
-                {user ? (
-                  <>
-                    <span className="user-pill">{user.name}</span>
-                    <button className="tiny-btn" onClick={() => { setAnalyticsOpen(true); loadAnalytics(); }}>Analytics</button>
-                    <button className="tiny-btn ghost" onClick={handleLogout}>Logout</button>
-                  </>
-                ) : (
-                  <button className="tiny-btn" onClick={() => setAuthModalOpen(true)}>Login / Register</button>
-                )}
-              </div>
-
               <label className="lang-control">
                 <span>Explanation language</span>
-                <select
-                  value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
-                >
+                <select value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)}>
                   {EXPLANATION_LANGUAGES.map((lang) => (
                     <option key={lang.code} value={lang.code}>{lang.label}</option>
                   ))}
@@ -904,48 +1070,32 @@ export default function App() {
 
               <label className="lang-control">
                 <span>AI provider</span>
-                <select
-                  value={selectedProvider}
-                  onChange={(e) => setSelectedProvider(e.target.value as AIProvider)}
-                >
-                  {AI_PROVIDER_OPTIONS.map((provider) => (
-                    <option key={provider.value} value={provider.value}>
-                      {provider.label}
-                    </option>
+                <select value={selectedProvider} onChange={(e) => setSelectedProvider(e.target.value as AIProvider)}>
+                  {AI_PROVIDER_OPTIONS.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
                   ))}
                 </select>
               </label>
 
               {selectedProvider === "gemma" && (
                 <label className="lang-control">
-                  <span>Gemma review depth</span>
-                  <select
-                    value={selectedReviewType}
-                    onChange={(e) => setSelectedReviewType(e.target.value as ReviewType)}
-                  >
+                  <span>Review depth</span>
+                  <select value={selectedReviewType} onChange={(e) => setSelectedReviewType(e.target.value as ReviewType)}>
                     {GEMMA_REVIEW_OPTIONS.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label}
-                      </option>
+                      <option key={item.value} value={item.value}>{item.label}</option>
                     ))}
                   </select>
                 </label>
               )}
 
               <div className="provider-readiness">
-                <span className={providerReady.groq ? "ready" : "not-ready"}>{`Groq: ${providerReady.groq ? "ready" : "not configured"}`}</span>
-                <span className={providerReady.gemma ? "ready" : "not-ready"}>{`Gemma: ${providerReady.gemma ? "ready" : "not configured"}`}</span>
+                <span className={providerReady.groq ? "ready" : "not-ready"}>Groq: {providerReady.groq ? "ready" : "not set"}</span>
+                <span className={providerReady.gemma ? "ready" : "not-ready"}>Gemma: {providerReady.gemma ? "ready" : "not set"}</span>
               </div>
 
-              <button
-                onClick={handleExplain}
-                disabled={loading}
-                className="btn-primary"
-              >
+              <button onClick={handleExplain} disabled={loading} className="btn-primary" style={{ fontSize: "1rem", padding: "13px 18px" }}>
                 {loading
-                  ? `Reviewing with ${loadingProvider === "gemma"
-                    ? selectedReviewType === "detailed" ? "Gemma 12B" : "Gemma 4B"
-                    : "Groq"}...`
+                  ? `Analyzing with ${loadingProvider === "gemma" ? (selectedReviewType === "detailed" ? "Gemma 12B" : "Gemma 4B") : "Groq"}...`
                   : "Explain Code"}
               </button>
             </div>
@@ -964,6 +1114,7 @@ export default function App() {
           <div className="editor-frame">
             <Editor
               height="62vh"
+              theme="vs-dark"
               defaultLanguage="javascript"
               defaultValue={code}
               value={code}
@@ -1076,36 +1227,57 @@ export default function App() {
             </>
           )}
 
-          <Modal
-            open={quizModalOpen}
-            onClose={() => {
-              if (quizLocked) return;
-              setQuizModalOpen(false);
-              setQuizLocked(false);
-            }}
-            disableClose={quizLocked}
-            title={quizLocked ? "Quiz Manager (Proctored Attempt Active)" : "Quiz Manager"}
-          >
-            <QuizManager
-              apiBaseUrl={API_BASE_URL}
-              preferredLanguage={selectedLanguageLabel}
-              contextCode={code}
-              authToken={authToken}
-              onAttemptRecorded={loadAnalytics}
-              onProctorLockChange={setQuizLocked}
-            />
-          </Modal>
         </aside>
       </div>
 
+      <Modal
+        open={quizModalOpen}
+        onClose={() => {
+          if (quizLocked) return;
+          setQuizModalOpen(false);
+          setQuizLocked(false);
+        }}
+        disableClose={quizLocked}
+        title={quizLocked ? "Quiz Manager (Proctored Attempt Active)" : "Quiz Manager"}
+        panelStyle={{ width: "min(1180px, 96vw)", maxHeight: "90vh" }}
+        contentStyle={{ padding: 18, maxHeight: "82vh" }}
+      >
+        <QuizManager
+          apiBaseUrl={API_BASE_URL}
+          preferredLanguage={selectedLanguageLabel}
+          contextCode={code}
+          authToken={authToken}
+          onAttemptRecorded={loadAnalytics}
+          onProctorLockChange={setQuizLocked}
+        />
+      </Modal>
+
       <Modal open={flashcardsOpen} onClose={() => setFlashcardsOpen(false)} title="Revision Flashcards">
-        <section className="flashcard-popup">
-          {quickFacts.length === 0 && <p>No key takeaways available yet.</p>}
-          {quickFacts.map((fact, i) => (
-            <article key={`${fact}-${i}`} className="quick-card" style={{ animationDelay: `${i * 70}ms` }}>
-              {fact}
-            </article>
-          ))}
+        <section style={{ display: "flex", flexDirection: "column", gap: "14px", padding: "4px 0" }}>
+          {!result && (
+            <p style={{ color: "#64748b" }}>No key takeaways available yet. Click Explain Code first.</p>
+          )}
+
+          {result && (() => {
+            // Build flip cards: prefer API flashcards, fall back to synthesized ones
+            const cards: { q: string; a: string }[] = [];
+            if (result.flashcards?.length) {
+              cards.push(...result.flashcards);
+            } else {
+              // Synthesize from result data
+              if (result.summary) cards.push({ q: "What does this code do?", a: result.summary });
+              (result.responsibilities || []).forEach((r, i) => {
+                cards.push({ q: `Responsibility ${i + 1}`, a: r });
+              });
+              (result.edge_cases || []).forEach((e, i) => {
+                cards.push({ q: `Edge case ${i + 1}?`, a: e });
+              });
+            }
+            if (cards.length === 0) return <p style={{ color: "#64748b" }}>No flashcards generated.</p>;
+            return cards.slice(0, 8).map((card, i) => (
+              <FlipCard key={`fc-${i}`} front={card.q} back={card.a} index={i} />
+            ));
+          })()}
         </section>
       </Modal>
 
@@ -1143,43 +1315,63 @@ export default function App() {
         </section>
       </Modal>
 
-      <Modal open={authModalOpen} onClose={() => setAuthModalOpen(false)} title={authMode === "login" ? "Login" : "Create Account"}>
-        <form className="auth-form" onSubmit={handleAuthSubmit}>
-          {authMode === "register" && (
-            <label>
-              Name
-              <input value={authForm.name} onChange={(e) => setAuthForm((prev) => ({ ...prev, name: e.target.value }))} required />
-            </label>
-          )}
-          <label>
-            Email
-            <input type="email" value={authForm.email} onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))} required />
-          </label>
-          <label>
-            Password
-            <input type="password" value={authForm.password} onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))} required minLength={6} />
-          </label>
-          {authError && <div className="auth-error">{authError}</div>}
-          <div className="auth-actions">
-            <button type="submit" className="btn-primary" disabled={authLoading}>{authLoading ? "Please wait..." : authMode === "login" ? "Login" : "Register"}</button>
-            <button
-              type="button"
-              className="btn-tertiary"
-              onClick={() => {
-                setAuthError("");
-                setAuthMode((prev) => (prev === "login" ? "register" : "login"));
-              }}
-            >
-              {authMode === "login" ? "Need an account?" : "Already have an account?"}
-            </button>
+      <Modal open={authModalOpen} onClose={() => setAuthModalOpen(false)} title="Sign In">
+        <div className="auth-form" style={{ display: "flex", flexDirection: "column", gap: "20px", padding: "8px 0" }}>
+          <div style={{ textAlign: "center", color: "#94a3b8", fontSize: "0.92rem", lineHeight: 1.6 }}>
+            Sign in with your Google account to unlock analytics, skill tracking, and personalized coaching.
           </div>
-          {authMode === "login" && GOOGLE_CLIENT_ID && (
-            <div className="google-auth-wrap">
-              <span>or</span>
-              <div ref={googleBtnRef} />
-            </div>
+
+          {authError && (
+            <div className="auth-error">{authError}</div>
           )}
-        </form>
+
+          {/* Hidden GSI button for initialization */}
+          <div ref={googleBtnRef} style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 0, height: 0, overflow: "hidden" }} />
+
+          <button
+            type="button"
+            onClick={() => {
+              const g = (window as GoogleWindow).google;
+              if (g?.accounts?.id) {
+                g.accounts.id.prompt();
+              }
+            }}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "14px",
+              padding: "14px 24px",
+              borderRadius: "14px",
+              border: "none",
+              background: "#fff",
+              color: "#3c4043",
+              fontSize: "1rem",
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "box-shadow 0.25s, transform 0.15s",
+              boxShadow: "0 4px 14px rgba(0,0,0,0.2)",
+              fontFamily: "'Google Sans', Roboto, sans-serif",
+              letterSpacing: "0.01em",
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 6px 24px rgba(0,0,0,0.32)"; (e.currentTarget as HTMLButtonElement).style.transform = "translateY(-1px)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 4px 14px rgba(0,0,0,0.2)"; (e.currentTarget as HTMLButtonElement).style.transform = "translateY(0)"; }}
+          >
+            <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              <path fill="none" d="M0 0h48v48H0z"/>
+            </svg>
+            Continue with Google
+          </button>
+
+          <div style={{ textAlign: "center", fontSize: "0.75rem", color: "#475569" }}>
+            Powered by Google OAuth 2.0
+          </div>
+        </div>
       </Modal>
 
       <Modal open={analyticsOpen} onClose={() => setAnalyticsOpen(false)} title="Learning Analytics Dashboard">
@@ -1252,6 +1444,31 @@ export default function App() {
                   ))}
                 </div>
               </section>
+
+              <section className="analytics-card">
+                <h4>Arena Battle Results</h4>
+                {analytics.arenaResults ? (
+                  <>
+                    <div className="analytics-grid">
+                      <article><strong>{analytics.arenaResults.wins}</strong><span>Wins</span></article>
+                      <article><strong>{analytics.arenaResults.losses}</strong><span>Losses</span></article>
+                      <article><strong>{analytics.arenaResults.avg_score}%</strong><span>Avg Score</span></article>
+                    </div>
+                    {analytics.arenaResults.matches.length > 0 && (
+                      <div className="plan-list" style={{ marginTop: "10px" }}>
+                        {analytics.arenaResults.matches.slice(-5).map((m, i) => (
+                          <article key={`arena-${i}`}>
+                            <strong>{m.problemTitle || "Arena Battle"}</strong>
+                            <p>{`Score: ${m.score}% — ${new Date(m.timestamp).toLocaleDateString()}`}</p>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p>No arena battles yet. Head to the Arena to compete!</p>
+                )}
+              </section>
             </>
           )}
 
@@ -1290,7 +1507,7 @@ export default function App() {
         </div>
       </Modal>
 
-      <style>{`.myLineDecoration { background: rgba(251, 191, 36, 0.18) !important; border-left: 2px solid rgba(251, 191, 36, 0.8); }`}</style>
+      <style>{`.myLineDecoration { background: rgba(99, 102, 241, 0.18) !important; border-left: 2px solid rgba(129, 140, 248, 0.9); }`}</style>
 
       <ChatbotAvatarSync
         transcript={transcriptString}
@@ -1299,9 +1516,298 @@ export default function App() {
         startOpen={avatarOpen || !!result}
         autoPlay={autoPlayAvatar}
       />
-    </div>
+      </div>
+    </>
+  );
+
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [demoStep, setDemoStep] = useState(0);
+  const [, setDemoShown] = useState(() => localStorage.getItem("demo-shown") === "1");
+
+  // Auto-show demo once for first-time visitors
+  useEffect(() => {
+    if (localStorage.getItem("demo-shown") !== "1") {
+      const t = setTimeout(() => setDemoOpen(true), 900);
+      return () => clearTimeout(t);
+    }
+  }, []);
+
+  const DEMO_STEPS = [
+    {
+      icon: "\uD83D\uDD10",
+      title: "Sign In with Google",
+      route: "/",
+      color: "#6366f1",
+      description: "Create your account in one click. Your profile is stored in DynamoDB and linked to TigerGraph's knowledge graph. Every action from here builds your personal learning profile.",
+      action: "Click Sign In → Continue with Google",
+    },
+    {
+      icon: "\uD83E\uDDE0",
+      title: "Code Explainer + Flashcards",
+      route: "/",
+      color: "#818cf8",
+      description: "Paste any code and click Explain Code. The AI generates a full breakdown — summary, responsibilities, edge cases, and interactive flip-card flashcards for revision. Open the AI Mentor to ask follow-up doubts.",
+      action: "Paste code → Explain Code → open Flashcards",
+    },
+    {
+      icon: "\uD83D\uDCDD",
+      title: "AI Quiz Studio",
+      route: "/",
+      color: "#a78bfa",
+      description: "Open Quiz Studio and generate an AI-powered quiz on any topic. Choose proctored mode for fullscreen lock + tab-switch detection. Answers are graded with AI feedback, and weak areas are written to your TigerGraph profile.",
+      action: "Open Quiz Studio → Generate Quiz → Begin Quiz",
+    },
+    {
+      icon: "\uD83D\uDDFA\uFE0F",
+      title: "Skill Intelligence Map",
+      route: "/skill-map",
+      color: "#22c55e",
+      description: "TigerGraph traverses your weak_in edges and prerequisite chains to build a live knowledge graph. Red nodes = critical weaknesses, amber = needs work, green = strong. Knowledge Debt shows what to fix first.",
+      action: "Go to Skill Map → see your graph → click AI Analyze",
+    },
+    {
+      icon: "\uD83D\uDCA1",
+      title: "Graph AI Chat",
+      route: "/",
+      color: "#06b6d4",
+      description: "The Graph AI uses a LangChain ReAct agent with 3 TigerGraph tools — skill gaps, prerequisite chains, and peer matching. It queries YOUR graph data live to give personalized answers. Look for the 'Graph-Powered' badge.",
+      action: "Click Ask Graph AI → type a question → see graph-powered answer",
+    },
+    {
+      icon: "\u2694\uFE0F",
+      title: "Live Coding Arena",
+      route: "/arena",
+      color: "#f59e0b",
+      description: "Battle the AI opponent! TigerGraph finds your weak concepts, the AI generates a tailored problem, you write code that runs against real test cases via Piston API. Results update your graph — the system learns from every battle.",
+      action: "Go to Arena → Compete vs AI → solve & submit",
+    },
+    {
+      icon: "\uD83D\uDCCA",
+      title: "Analytics Dashboard",
+      route: "/",
+      color: "#ec4899",
+      description: "Track your quiz scores, arena battle results, improvement trends, weak topics, and badges. Generate a 7-day AI study plan based on your analytics. Every interaction feeds back into TigerGraph — the graph gets smarter over time.",
+      action: "Click Analytics → view scores → Generate Study Plan",
+    },
+  ];
+
+  function openDemo() {
+    setDemoStep(0);
+    setDemoOpen(true);
+  }
+
+  function closeDemoAndMark() {
+    setDemoOpen(false);
+    localStorage.setItem("demo-shown", "1");
+    setDemoShown(true);
+  }
+
+  return (
+    <BrowserRouter>
+      {/* ── Navbar ── */}
+      <div className="demo-nav">
+        <div className="demo-nav-brand">
+          <span className="demo-nav-brand-icon" aria-hidden="true">{"\u25C8"}</span>
+          <span>CodeCoach</span>
+        </div>
+
+        <div className="demo-nav-links">
+          <NavLink to="/" end className={({ isActive }) => `demo-nav-link${isActive ? " active" : ""}`}>
+            Home
+          </NavLink>
+          <NavLink to="/skill-map" className={({ isActive }) => `demo-nav-link${isActive ? " active" : ""}`}>
+            {"\u25C9"} Skill Map
+          </NavLink>
+          <NavLink to="/arena" className={({ isActive }) => `demo-nav-link${isActive ? " active" : ""}`}>
+            {"\u2694"} Arena
+          </NavLink>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {/* Backend health */}
+          <span className={`backend-pill ${backendHealth}`} style={{ fontSize: "0.72rem" }}>
+            {backendHealth === "online" ? "● Backend online" : backendHealth === "offline" ? "● Offline" : "● Checking"}
+          </span>
+
+          {/* Theme */}
+          <button
+            onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}
+            className="theme-toggle"
+            style={{ padding: "6px 10px", fontSize: "0.78rem" }}
+          >
+            {theme === "dark" ? "☀ Light" : "☾ Dark"}
+          </button>
+
+          {/* Demo button */}
+          <button
+            onClick={openDemo}
+            style={{
+              padding: "7px 14px", borderRadius: "999px", fontSize: "0.8rem", fontWeight: 700,
+              border: "1px solid rgba(245,158,11,0.4)",
+              background: "linear-gradient(135deg, rgba(245,158,11,0.18), rgba(239,68,68,0.1))",
+              color: "#fbbf24", cursor: "pointer", display: "flex", alignItems: "center", gap: "6px"
+            }}
+          >
+            🎯 Judge Demo
+          </button>
+
+          {/* Auth */}
+          {user ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span className="user-pill">{user.name}</span>
+              <button className="tiny-btn" onClick={() => { setAnalyticsOpen(true); loadAnalytics(); }} style={{ padding: "6px 10px", fontSize: "0.78rem" }}>Analytics</button>
+              <button className="tiny-btn ghost" onClick={handleLogout} style={{ padding: "6px 10px", fontSize: "0.78rem" }}>Logout</button>
+            </div>
+          ) : (
+            <button
+              className="btn-primary"
+              onClick={() => setAuthModalOpen(true)}
+              style={{ padding: "8px 16px", fontSize: "0.82rem" }}
+            >
+              Sign In
+            </button>
+          )}
+        </div>
+      </div>
+
+      <Routes>
+        <Route path="/" element={homePage} />
+        <Route path="/skill-map" element={<SkillMapPage />} />
+        <Route path="/arena" element={<ArenaPage />} />
+      </Routes>
+
+      <GraphAgentChat />
+
+      {/* ── Demo Flow Modal ── */}
+      {demoOpen && (() => {
+        const step = DEMO_STEPS[demoStep];
+        return (
+          <div style={{
+            position: "fixed", inset: 0, zIndex: 100,
+            background: "rgba(5,5,10,0.85)", backdropFilter: "blur(12px)",
+            display: "grid", placeItems: "center", padding: "24px"
+          }}>
+            <div style={{
+              width: "min(560px, 100%)", borderRadius: "24px",
+              background: "#111118", border: "1px solid rgba(99,102,241,0.22)",
+              boxShadow: "0 40px 100px rgba(0,0,0,0.7)",
+              overflow: "hidden"
+            }}>
+              {/* Progress bar */}
+              <div style={{ height: "3px", background: "#1e1e2e" }}>
+                <div style={{
+                  height: "100%", transition: "width 0.4s ease",
+                  width: `${((demoStep + 1) / DEMO_STEPS.length) * 100}%`,
+                  background: `linear-gradient(90deg, #6366f1, ${step.color})`
+                }} />
+              </div>
+
+              <div style={{ padding: "32px 32px 28px" }}>
+                {/* Header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px" }}>
+                  <div>
+                    <div style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#475569", marginBottom: "6px" }}>
+                      Step {demoStep + 1} of {DEMO_STEPS.length}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <div style={{
+                        width: "48px", height: "48px", borderRadius: "16px", fontSize: "1.5rem",
+                        display: "grid", placeItems: "center",
+                        background: `linear-gradient(135deg, ${step.color}22, ${step.color}08)`,
+                        border: `1px solid ${step.color}44`
+                      }}>
+                        {step.icon}
+                      </div>
+                      <h2 style={{ margin: 0, color: "#f1f5f9", fontSize: "1.25rem", fontWeight: 800 }}>
+                        {step.title}
+                      </h2>
+                    </div>
+                  </div>
+                  <button onClick={closeDemoAndMark} style={{ background: "none", border: "none", color: "#475569", fontSize: "1.4rem", cursor: "pointer", padding: "0 4px" }}>×</button>
+                </div>
+
+                {/* Description */}
+                <p style={{ margin: "0 0 20px", color: "#94a3b8", lineHeight: 1.75, fontSize: "0.97rem" }}>
+                  {step.description}
+                </p>
+
+                {/* Action hint */}
+                <div style={{
+                  padding: "14px 16px", borderRadius: "12px",
+                  background: `linear-gradient(135deg, ${step.color}12, ${step.color}06)`,
+                  border: `1px solid ${step.color}28`,
+                  color: step.color, fontSize: "0.88rem", fontWeight: 600,
+                  marginBottom: "24px"
+                }}>
+                  👉 {step.action}
+                </div>
+
+                {/* Step dots */}
+                <div style={{ display: "flex", justifyContent: "center", gap: "8px", marginBottom: "24px" }}>
+                  {DEMO_STEPS.map((_, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setDemoStep(i)}
+                      style={{
+                        width: i === demoStep ? "24px" : "8px", height: "8px",
+                        borderRadius: "999px", border: "none", cursor: "pointer",
+                        background: i === demoStep ? step.color : "#2a2a3d",
+                        transition: "all 0.3s ease", padding: 0
+                      }}
+                    />
+                  ))}
+                </div>
+
+                {/* Buttons */}
+                <div style={{ display: "flex", gap: "10px" }}>
+                  {demoStep > 0 && (
+                    <button
+                      onClick={() => setDemoStep((s) => s - 1)}
+                      style={{
+                        flex: 1, padding: "12px", borderRadius: "12px", fontWeight: 600,
+                        border: "1px solid #2a2a3d", background: "#161622",
+                        color: "#94a3b8", cursor: "pointer", fontSize: "0.92rem"
+                      }}
+                    >
+                      ← Back
+                    </button>
+                  )}
+                  {demoStep < DEMO_STEPS.length - 1 ? (
+                    <button
+                      onClick={() => setDemoStep((s) => s + 1)}
+                      style={{
+                        flex: 2, padding: "12px", borderRadius: "12px", fontWeight: 700,
+                        border: "none",
+                        background: `linear-gradient(135deg, #6366f1, ${step.color})`,
+                        color: "#fff", cursor: "pointer", fontSize: "0.92rem"
+                      }}
+                    >
+                      Next Feature →
+                    </button>
+                  ) : (
+                    <button
+                      onClick={closeDemoAndMark}
+                      style={{
+                        flex: 2, padding: "12px", borderRadius: "12px", fontWeight: 700,
+                        border: "none",
+                        background: "linear-gradient(135deg, #6366f1, #22c55e)",
+                        color: "#fff", cursor: "pointer", fontSize: "0.92rem"
+                      }}
+                    >
+                      🚀 Start Exploring
+                    </button>
+                  )}
+                </div>
+
+                <p style={{ textAlign: "center", margin: "16px 0 0", fontSize: "0.78rem", color: "#334155" }}>
+                  Reopen anytime via the <strong style={{ color: "#475569" }}>🎯 Judge Demo</strong> button in the nav
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+    </BrowserRouter>
   );
 }
-
-
-
