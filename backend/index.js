@@ -84,6 +84,7 @@ const configuredOrigins = String(process.env.CORS_ORIGIN || "")
 const defaultProdOrigins = [
   "https://codecoach-studio.vercel.app",
   "https://www.codecoach-studio.vercel.app",
+  "https://main.d8cqzw6o7lffj.amplifyapp.com",
   "http://localhost:5173",
   "http://127.0.0.1:5173"
 ];
