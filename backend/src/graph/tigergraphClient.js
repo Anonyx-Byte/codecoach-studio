@@ -15,6 +15,7 @@ const TG_HOST = process.env.TG_HOST;
 const TG_SECRET = process.env.TG_SECRET;
 const TG_GRAPH = process.env.TG_GRAPH || "LearningGraph";
 const DEMO_MODE = process.env.DEMO_MODE === "true";
+const TG_REQUEST_TIMEOUT_MS = Number(process.env.TG_REQUEST_TIMEOUT_MS || 15000);
 
 let cachedToken = null;
 let tokenExpiry = null;
@@ -30,7 +31,7 @@ async function getToken() {
       { secret: TG_SECRET },
       {
         headers: { "Content-Type": "application/json" },
-        timeout: 10000
+        timeout: TG_REQUEST_TIMEOUT_MS
       }
     );
     const token = response.data?.token;
@@ -65,7 +66,7 @@ async function runQuery(queryName, params = {}) {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json"
       },
-      timeout: 15000
+      timeout: TG_REQUEST_TIMEOUT_MS
     });
     return response.data;
   } catch (err) {
@@ -81,7 +82,7 @@ async function ping() {
   try {
     const response = await axios.get(
       `${TG_HOST}/restpp/echo`,
-      { timeout: 3000 }
+      { timeout: TG_REQUEST_TIMEOUT_MS }
     );
     return response.data?.error === false;
   } catch {

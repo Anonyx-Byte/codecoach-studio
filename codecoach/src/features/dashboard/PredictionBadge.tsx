@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getApiBase } from "../../lib/apiBase";
 
 type PredictionRow = {
   concept?: string;
@@ -12,7 +13,7 @@ type PredictionResponse = {
   source?: string;
 };
 
-const BASE = (((import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } })?.env?.VITE_API_BASE_URL) || "").replace(/\/$/, "");
+const BASE = getApiBase(import.meta.env.VITE_API_BASE_URL);
 
 function scoreColor(score: number) {
   if (score < 40) return "#ef4444";

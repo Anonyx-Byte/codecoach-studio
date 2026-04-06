@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getApiBase } from "../../lib/apiBase";
 
 type HintPanelProps = {
   studentId: string;
@@ -28,7 +29,7 @@ type HintResponse = {
   adaptive?: boolean;
 };
 
-const BASE = import.meta.env.VITE_API_BASE_URL || "";
+const BASE = getApiBase(import.meta.env.VITE_API_BASE_URL);
 
 function getHintStyleLabel(hintStyle: string) {
   if (hintStyle === "advanced") return "\ud83d\udfe2 Advanced Mode";

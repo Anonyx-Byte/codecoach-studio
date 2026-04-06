@@ -7,6 +7,13 @@ const { DEMO_STUDENTS, fallbackSkillIntelligence } = require("../graph/seedData"
 
 const router = express.Router();
 
+router.use((req, _res, next) => {
+  if (req.path !== "/wake") {
+    triggerWakeOnDemand().catch(() => {});
+  }
+  next();
+});
+
 router.get("/wake", (_req, res) => {
   triggerWakeOnDemand().catch(() => {});
   return res.status(202).json({
@@ -44,7 +51,14 @@ function sanitizeId(id) {
 
 function extractPrimaryRecord(data) {
   if (!data) return null;
-  if (Array.isArray(data.results) && data.results.length > 0) return data.results[0];
+  if (Array.isArray(data.results) && data.results.length > 0) {
+    return data.results.reduce((merged, record) => {
+      if (record && typeof record === "object" && !Array.isArray(record)) {
+        Object.assign(merged, record);
+      }
+      return merged;
+    }, {});
+  }
   if (data.results && typeof data.results === "object") return data.results;
   return data;
 }
@@ -73,7 +87,7 @@ function normalizeConcepts(rawConcepts) {
       return {
         id: String(concept?.id || concept?.name || concept?.concept || "").toLowerCase().replace(/[^a-z0-9]+/g, "-"),
         name: String(concept?.name || concept?.concept || concept?.id || ""),
-        weakness_score: Number(concept?.weakness_score || concept?.score || 50)
+        weakness_score: Number(concept?.weakness_score || concept?.error_frequency || concept?.err_freq || concept?.debt_score || concept?.score || 50)
       };
     })
     .filter((concept) => concept.name);
@@ -89,12 +103,52 @@ function extractPagerankConcepts(data) {
     : Array.isArray(data?.top_concepts)
       ? data.top_concepts
       : [];
+  const pagerankNodes = records?.[0]?.pagerank_top_nodes || records?.[0]?.top_scores || records;
+  const flatRecords = Array.isArray(pagerankNodes) ? pagerankNodes : records;
 
-  return records.map((item) => ({
-    id: String(item?.id || item?.name || "").trim(),
-    name: String(item?.name || item?.id || "").trim(),
+  return flatRecords.map((item) => ({
+    id: String(item?.Vertex_ID || item?.v_id || item?.id || item?.name || "").trim(),
+    name: String(item?.name || item?.Vertex_ID || item?.v_id || item?.id || "").trim(),
     score: Number(item?.score || item?.pagerank || 0)
   }));
+}
+
+function buildSkillMapEdges(response) {
+  const prerequisiteEdges = response.prerequisites.flatMap((prerequisite) =>
+    response.weak_concepts
+      .filter((concept) => concept.id !== prerequisite.id)
+      .map((concept) => ({
+        from: prerequisite.id,
+        to: concept.id,
+        label: "requires",
+        arrows: "to"
+      }))
+  );
+
+  const sortedWeakConcepts = [...response.weak_concepts]
+    .sort((a, b) => Number(b.weakness_score || 0) - Number(a.weakness_score || 0));
+
+  const inferredWeakEdges = sortedWeakConcepts.flatMap((concept, index) =>
+    sortedWeakConcepts
+      .slice(index + 1)
+      .filter((candidate) => candidate.id !== concept.id)
+      .map((candidate) => ({
+        from: concept.id,
+        to: candidate.id,
+        label: "blocks",
+        arrows: "to"
+      }))
+  );
+
+  const dedupedEdges = new Map();
+  for (const edge of [...prerequisiteEdges, ...inferredWeakEdges]) {
+    const key = `${edge.from}->${edge.to}`;
+    if (!dedupedEdges.has(key)) {
+      dedupedEdges.set(key, edge);
+    }
+  }
+
+  return Array.from(dedupedEdges.values());
 }
 
 function buildSkillIntelligenceResponse(studentId, data) {
@@ -272,16 +326,7 @@ router.get("/skill-map/:studentId", async (req, res) => {
     });
   }
 
-  const edges = response.prerequisites.flatMap((prerequisite) =>
-    response.weak_concepts
-      .filter((concept) => concept.id !== prerequisite.id)
-      .map((concept) => ({
-        from: prerequisite.id,
-        to: concept.id,
-        label: "requires",
-        arrows: "to"
-      }))
-  );
+  const edges = buildSkillMapEdges(response);
 
   return res.json({
     nodes: Array.from(nodesById.values()),
@@ -348,9 +393,10 @@ router.get("/pagerank", async (_req, res) => {
   if (flatRecords.length) {
     const topConcepts = flatRecords.map((item) => ({
       id: String(item?.Vertex_ID || item?.v_id || item?.id || item?.name || ""),
-      name: String(item?.name || item?.Vertex_ID || item?.v_id || item?.id || ""),
+      name: String(item?.Vertex_ID || item?.name || item?.v_id || item?.id || ""),
       score: Number(item?.score || item?.pagerank || 0)
-    }));
+    }))
+      .sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
 
     return res.json({
       top_concepts: topConcepts,

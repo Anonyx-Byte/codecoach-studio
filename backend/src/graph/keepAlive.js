@@ -1,6 +1,7 @@
 const { ping, runQuery } = require("./tigergraphClient");
 
 const TG_WAKE_COOLDOWN_MS = Number(process.env.TG_WAKE_COOLDOWN_MS || 120000);
+const TG_WAKE_RETRY_MS = Number(process.env.TG_WAKE_RETRY_MS || 15000);
 let wakePromise = null;
 let lastWakeAttemptAt = 0;
 let lastWakeResult = false;
@@ -40,7 +41,8 @@ function triggerWakeOnDemand() {
   }
 
   const now = Date.now();
-  if (lastWakeAttemptAt && now - lastWakeAttemptAt < TG_WAKE_COOLDOWN_MS) {
+  const cooldownMs = lastWakeResult ? TG_WAKE_COOLDOWN_MS : TG_WAKE_RETRY_MS;
+  if (lastWakeAttemptAt && now - lastWakeAttemptAt < cooldownMs) {
     return Promise.resolve(lastWakeResult);
   }
 

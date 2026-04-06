@@ -838,6 +838,37 @@
   font-size: 0.88rem;
 }
 
+.auth-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.auth-form-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-divider {
+  position: relative;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.auth-divider::before {
+  content: "";
+  position: absolute;
+  inset: 50% 0 auto;
+  border-top: 1px solid var(--line);
+}
+
+.auth-divider span {
+  position: relative;
+  padding: 0 10px;
+  background: var(--bg-panel);
+}
+
 .google-auth-wrap {
   margin-top: 8px;
   display: grid;

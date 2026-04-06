@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { getApiBase } from "../../lib/apiBase";
 
 export type SkillGraphNode = {
   id: string;
@@ -20,7 +21,7 @@ type SkillGraphResponse = {
   source?: string;
 };
 
-const BASE = import.meta.env.VITE_API_BASE_URL || "";
+const BASE = getApiBase(import.meta.env.VITE_API_BASE_URL);
 
 export function useSkillGraph(studentId: string) {
   const [nodes, setNodes] = useState<SkillGraphNode[]>([]);

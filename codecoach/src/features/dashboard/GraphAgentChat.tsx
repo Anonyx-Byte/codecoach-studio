@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { getApiBase } from "../../lib/apiBase";
 
 type GraphAgentResponse = {
   answer?: string | null;
@@ -17,7 +18,7 @@ type ChatEntry = {
   };
 };
 
-const BASE = (((import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } })?.env?.VITE_API_BASE_URL) || "").replace(/\/$/, "");
+const BASE = getApiBase(import.meta.env.VITE_API_BASE_URL);
 
 async function requestAgent(studentId: string, question: string): Promise<GraphAgentResponse> {
   const payload = JSON.stringify({ studentId, question });

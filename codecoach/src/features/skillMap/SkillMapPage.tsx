@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Network } from "vis-network/standalone";
 import { useSkillGraph } from "./useSkillGraph";
+import { getApiBase } from "../../lib/apiBase";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ type KnowledgeDebtResponse = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const BASE = getApiBase(import.meta.env.VITE_API_BASE_URL);
 
 /** If the AI returned JSON instead of plain text, extract readable content from it */
 function cleanAIResponse(text: string): string {

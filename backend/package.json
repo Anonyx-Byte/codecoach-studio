@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "migrate:dynamo": "node scripts/migrate-to-dynamo.js",
-    "health:check": "node scripts/health-check.js"
+    "health:check": "node scripts/health-check.js",
+    "package:eb": "node scripts/create-eb-deploy.js"
   },
   "keywords": [],
   "author": "",

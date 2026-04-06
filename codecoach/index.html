@@ -5,6 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>codecoach</title>
+    <script>
+      (function wakeTigerGraphOnLoad() {
+        var rawBase = "%VITE_API_BASE_URL%";
+        var configuredBase = rawBase && rawBase !== "%VITE_API_BASE_URL%" ? rawBase : "";
+        var normalizedBase = configuredBase.replace(/\/$/, "").replace(/\/api$/, "");
+        var wakeUrl = normalizedBase + "/api/graph/wake";
+
+        try {
+          fetch(wakeUrl, { keepalive: true }).catch(function () {});
+        } catch (_err) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

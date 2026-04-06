@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getApiBase } from "../../lib/apiBase";
 
 type ImpostorRecord = {
   id: string;
@@ -8,7 +9,7 @@ type ImpostorResponse = {
   impostors?: ImpostorRecord[];
 };
 
-const BASE = import.meta.env.VITE_API_BASE_URL || "";
+const BASE = getApiBase(import.meta.env.VITE_API_BASE_URL);
 
 export default function ImpostorBadge() {
   const userId = localStorage.getItem("userId") || "";

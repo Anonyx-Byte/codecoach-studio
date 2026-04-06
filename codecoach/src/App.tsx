@@ -20,6 +20,7 @@ import SkillMapPage from "./features/skillMap/SkillMapPage";
 import ArenaPage from "./features/arena/ArenaPage";
 import ImpostorBadge from "./features/dashboard/ImpostorBadge";
 import GraphAgentChat from "./features/dashboard/GraphAgentChat";
+import { getApiBase } from "./lib/apiBase";
 import "./App.css";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend);
@@ -136,7 +137,7 @@ type GoogleWindow = Window & typeof globalThis & {
   google?: any;
 };
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const API_BASE_URL = getApiBase(import.meta.env.VITE_API_BASE_URL);
 const AUTH_TOKEN_KEY = "codecoach-auth-token";
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
 
@@ -377,9 +378,6 @@ export default function App() {
   const [speechListening, setSpeechListening] = useState(false);
   const speechSupported = Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
-  void setAuthMode;
-  void authLoading;
-
   const selectedLanguageLabel =
     EXPLANATION_LANGUAGES.find((lang) => lang.code === selectedLanguage)?.label ?? "English";
 
@@ -451,7 +449,7 @@ export default function App() {
   useEffect(() => {
     let active = true;
 
-    void fetch(`${API_BASE_URL}/api/graph/wake`).catch(() => {});
+    void fetch(`${API_BASE_URL}/api/graph/wake`, { keepalive: true }).catch(() => {});
 
     async function pingHealth() {
       try {
@@ -797,8 +795,6 @@ export default function App() {
       setAuthLoading(false);
     }
   }
-
-  void handleAuthSubmit;
 
   function handleLogout() {
     localStorage.removeItem(AUTH_TOKEN_KEY);
@@ -1315,10 +1311,41 @@ export default function App() {
         </section>
       </Modal>
 
-      <Modal open={authModalOpen} onClose={() => setAuthModalOpen(false)} title="Sign In">
+      <Modal
+        open={authModalOpen}
+        onClose={() => {
+          setAuthModalOpen(false);
+          setAuthError("");
+          setAuthMode("login");
+        }}
+        title={authMode === "login" ? "Sign In" : "Create Account"}
+      >
         <div className="auth-form" style={{ display: "flex", flexDirection: "column", gap: "20px", padding: "8px 0" }}>
           <div style={{ textAlign: "center", color: "#94a3b8", fontSize: "0.92rem", lineHeight: 1.6 }}>
-            Sign in with your Google account to unlock analytics, skill tracking, and personalized coaching.
+            Use Google or your email and password to unlock analytics, skill tracking, and personalized coaching.
+          </div>
+
+          <div className="auth-toggle" role="tablist" aria-label="Authentication mode">
+            <button
+              type="button"
+              className={authMode === "login" ? "btn-primary" : "btn-tertiary"}
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError("");
+              }}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              className={authMode === "register" ? "btn-primary" : "btn-tertiary"}
+              onClick={() => {
+                setAuthMode("register");
+                setAuthError("");
+              }}
+            >
+              Create Account
+            </button>
           </div>
 
           {authError && (
@@ -1371,6 +1398,64 @@ export default function App() {
           <div style={{ textAlign: "center", fontSize: "0.75rem", color: "#475569" }}>
             Powered by Google OAuth 2.0
           </div>
+
+          <div className="auth-divider">
+            <span>or use email</span>
+          </div>
+
+          <form className="auth-form-stack" onSubmit={(e) => void handleAuthSubmit(e)}>
+            {authMode === "register" && (
+              <label>
+                Full Name
+                <input
+                  value={authForm.name}
+                  onChange={(e) => setAuthForm((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder="Your name"
+                  autoComplete="name"
+                />
+              </label>
+            )}
+
+            <label>
+              Email
+              <input
+                type="email"
+                value={authForm.email}
+                onChange={(e) => setAuthForm((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder="you@example.com"
+                autoComplete="email"
+              />
+            </label>
+
+            <label>
+              Password
+              <input
+                type="password"
+                value={authForm.password}
+                onChange={(e) => setAuthForm((prev) => ({ ...prev, password: e.target.value }))}
+                placeholder={authMode === "login" ? "Enter your password" : "Create a password"}
+                autoComplete={authMode === "login" ? "current-password" : "new-password"}
+              />
+            </label>
+
+            <div className="auth-actions">
+              <button type="submit" className="btn-primary" disabled={authLoading}>
+                {authLoading
+                  ? (authMode === "login" ? "Signing In..." : "Creating Account...")
+                  : (authMode === "login" ? "Sign In with Email" : "Create Account")}
+              </button>
+              <button
+                type="button"
+                className="btn-tertiary"
+                onClick={() => {
+                  setAuthMode((prev) => prev === "login" ? "register" : "login");
+                  setAuthError("");
+                }}
+              >
+                {authMode === "login" ? "Need an account?" : "Have an account?"}
+              </button>
+            </div>
+          </form>
         </div>
       </Modal>
 
@@ -1661,7 +1746,11 @@ export default function App() {
           ) : (
             <button
               className="btn-primary"
-              onClick={() => setAuthModalOpen(true)}
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError("");
+                setAuthModalOpen(true);
+              }}
               style={{ padding: "8px 16px", fontSize: "0.82rem" }}
             >
               Sign In
